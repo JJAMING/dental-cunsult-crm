@@ -24,6 +24,7 @@ type DynamicSupabaseClient = {
     getUser(): Promise<{ data: { user: { id: string } | null }; error: SupabaseErrorLike }>;
   };
   from(table: string): QueryBuilder;
+  rpc(functionName: string, args?: UnknownRecord): QueryBuilder;
 };
 
 type AdminSettingsSnapshotRow = {
@@ -108,7 +109,49 @@ async function readLinkedSupabaseClinic(client: DynamicSupabaseClient, userId: s
   } satisfies LinkedSupabaseClinic;
 }
 
+async function readIsSuperAdmin(client: DynamicSupabaseClient) {
+  const { data, error } = await client.rpc("is_super_admin").single<boolean>();
+
+  assertNoSupabaseError(error);
+
+  return Boolean(data);
+}
+
+async function readAllSupabaseClinics(client: DynamicSupabaseClient) {
+  const { data, error } = await client
+    .from("clinics")
+    .select("id,name,app_clinic_key");
+
+  assertNoSupabaseError(error);
+
+  return ((data ?? []) as SupabaseClinicJoinRow[])
+    .flatMap((clinic) => {
+      const clinicId = clinic.id || "";
+
+      if (!clinicId) {
+        return [];
+      }
+
+      const linkedClinic: LinkedSupabaseClinic = {
+        appClinicKey: clinic.app_clinic_key || clinicId,
+        clinicId,
+        name: clinic.name || "연결된 치과",
+        role: "admin",
+      };
+
+      return [linkedClinic];
+    });
+}
+
 async function readLinkedSupabaseClinics(client: DynamicSupabaseClient, userId: string) {
+  if (await readIsSuperAdmin(client)) {
+    const clinics = await readAllSupabaseClinics(client);
+
+    if (clinics.length) {
+      return clinics;
+    }
+  }
+
   const { data, error } = await client
     .from("clinic_memberships")
     .select("clinic_id,role,clinic:clinics(id,name,app_clinic_key)")
