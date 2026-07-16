@@ -288,6 +288,7 @@ export function ConsultationsWorkspace() {
   const [openColumnFilter, setOpenColumnFilter] = useState<ColumnFilterKey | null>(null);
   const [columnFilters, setColumnFilters] = useState<ColumnFilters>(emptyColumnFilters);
   const [currentPage, setCurrentPage] = useState(1);
+  const [saveErrorMessage, setSaveErrorMessage] = useState("");
   const weekOptions = useMemo(
     () => getWeekOptions(selectedYear, selectedMonth),
     [selectedMonth, selectedYear],
@@ -429,13 +430,23 @@ export function ConsultationsWorkspace() {
       return;
     }
 
-    await updateConsultation(editingConsultation.id, input);
-    setEditingConsultation(null);
+    try {
+      setSaveErrorMessage("");
+      await updateConsultation(editingConsultation.id, input);
+      setEditingConsultation(null);
+    } catch (error) {
+      setSaveErrorMessage(error instanceof Error ? error.message : "상담일지 수정에 실패했습니다.");
+    }
   };
 
   const handleTreatmentPlanSubmit = async (input: ConsultationFormInput) => {
-    await addConsultation(input);
-    setTreatmentPlanSource(null);
+    try {
+      setSaveErrorMessage("");
+      await addConsultation(input);
+      setTreatmentPlanSource(null);
+    } catch (error) {
+      setSaveErrorMessage(error instanceof Error ? error.message : "치료계획 추가에 실패했습니다.");
+    }
   };
 
   const handleDeleteConfirm = async () => {
@@ -443,8 +454,13 @@ export function ConsultationsWorkspace() {
       return;
     }
 
-    await deleteConsultation(deleteConfirmTarget.id);
-    setDeleteConfirmTarget(null);
+    try {
+      setSaveErrorMessage("");
+      await deleteConsultation(deleteConfirmTarget.id);
+      setDeleteConfirmTarget(null);
+    } catch (error) {
+      setSaveErrorMessage(error instanceof Error ? error.message : "상담일지 삭제에 실패했습니다.");
+    }
   };
 
   const toggleColumnFilterValue = (key: ColumnFilterKey, value: string) => {
@@ -504,6 +520,12 @@ export function ConsultationsWorkspace() {
         </div>
         <ConsultationRegisterDialog />
       </section>
+
+      {saveErrorMessage ? (
+        <div className="rounded-2xl border border-[#ffd0d0] bg-[#fff5f5] px-4 py-3 text-sm font-bold text-[#ad1f3d]">
+          {saveErrorMessage}
+        </div>
+      ) : null}
 
       <section className="crm-card overflow-hidden">
         <div className="flex flex-col gap-3 border-b border-mist px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
@@ -854,8 +876,12 @@ export function ConsultationsWorkspace() {
           consultation={editingConsultation}
           title="상담 수정"
           submitLabel="수정 저장"
-          onClose={() => setEditingConsultation(null)}
+          onClose={() => {
+            setSaveErrorMessage("");
+            setEditingConsultation(null);
+          }}
           onSubmit={handleEditSubmit}
+          saveErrorMessage={saveErrorMessage}
         />
       ) : null}
 
@@ -865,8 +891,12 @@ export function ConsultationsWorkspace() {
           mode="treatmentPlan"
           title="치료계획 추가"
           submitLabel="치료계획 등록"
-          onClose={() => setTreatmentPlanSource(null)}
+          onClose={() => {
+            setSaveErrorMessage("");
+            setTreatmentPlanSource(null);
+          }}
           onSubmit={handleTreatmentPlanSubmit}
+          saveErrorMessage={saveErrorMessage}
         />
       ) : null}
     </div>

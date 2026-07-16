@@ -297,8 +297,10 @@ export function ConsultationFormDialog({
   submitLabel,
   onClose,
   onSubmit,
+  saveErrorMessage = "",
 }: {
   consultation?: Consultation;
+  saveErrorMessage?: string;
   mode?: FormMode;
   title: string;
   submitLabel: string;
@@ -592,6 +594,11 @@ export function ConsultationFormDialog({
             });
           }}
         >
+          {saveErrorMessage ? (
+            <div className="rounded-2xl border border-[#ffd0d0] bg-[#fff5f5] px-4 py-3 text-sm font-bold text-[#ad1f3d]">
+              {saveErrorMessage}
+            </div>
+          ) : null}
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {textFields.map((field) => {
               const fieldValue = formState[field.name];

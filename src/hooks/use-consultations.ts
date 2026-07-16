@@ -16,6 +16,7 @@ import {
   readSupabaseConsultations,
   updateSupabaseConsultation,
 } from "@/lib/supabase/consultations";
+import { isSupabaseConfigured } from "@/lib/supabase/browser";
 import type { Consultation, ConsultationResult, PatientType } from "@/types/domain";
 
 const consultationStorageKey = "dental-consult-consultations-v1";
@@ -343,8 +344,18 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
 
         return supabaseConsultation;
       }
-    } catch {
-      // Fall back to browser storage when Supabase is not configured or the user is not signed in.
+    } catch (error) {
+      if (isSupabaseConfigured()) {
+        throw new Error(
+          error instanceof Error
+            ? `Supabase 상담일지 저장 실패: ${error.message}`
+            : "Supabase 상담일지 저장에 실패했습니다.",
+        );
+      }
+    }
+
+    if (isSupabaseConfigured()) {
+      throw new Error("Supabase 로그인 세션을 확인하지 못해 상담일지를 저장하지 못했습니다.");
     }
 
     const consultation: Consultation = {
@@ -395,8 +406,18 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
 
         return supabaseConsultation;
       }
-    } catch {
-      // Existing local-only rows, demo rows, or offline work continue to use browser storage.
+    } catch (error) {
+      if (isSupabaseConfigured()) {
+        throw new Error(
+          error instanceof Error
+            ? `Supabase 상담일지 수정 실패: ${error.message}`
+            : "Supabase 상담일지 수정에 실패했습니다.",
+        );
+      }
+    }
+
+    if (isSupabaseConfigured()) {
+      throw new Error("Supabase 로그인 세션을 확인하지 못해 상담일지를 수정하지 못했습니다.");
     }
 
     const currentConsultations = readStoredConsultations();
@@ -458,8 +479,15 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
         });
 
         return true;
-      } catch {
-        // Keep the local tombstone so the row does not reappear on this device while offline.
+      } catch (error) {
+        if (isSupabaseConfigured()) {
+          throw new Error(
+            error instanceof Error
+              ? `Supabase 상담일지 삭제 실패: ${error.message}`
+              : "Supabase 상담일지 삭제에 실패했습니다.",
+          );
+        }
+
         return false;
       }
     }
