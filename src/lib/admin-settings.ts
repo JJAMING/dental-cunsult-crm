@@ -437,20 +437,11 @@ export function upsertDashboardMonthlyGoal(
 }
 
 export const defaultAdminSettings: AdminSettings = {
-  activeClinicId: "acro-dental",
+  activeClinicId: "supabase-clinic-pending",
   clinics: [
     {
-      id: "acro-dental",
-      name: "아크로치과",
-      dentwebIntegration: defaultDentwebIntegrationSettings,
-      dashboardGoals: defaultDashboardGoals,
-      recommendationPhrases: defaultRecommendationPhrases,
-      disagreementReasonRecommendationPhrases: createDefaultDisagreementReasonRecommendationPhrases(),
-      options: createDefaultOptions(),
-    },
-    {
-      id: "demo-dental",
-      name: "테스트 치과",
+      id: "supabase-clinic-pending",
+      name: "치과 선택 대기",
       dentwebIntegration: defaultDentwebIntegrationSettings,
       dashboardGoals: defaultDashboardGoals,
       recommendationPhrases: defaultRecommendationPhrases,
