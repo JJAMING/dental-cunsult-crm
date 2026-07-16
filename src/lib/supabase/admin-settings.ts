@@ -42,10 +42,16 @@ type SupabaseProfileClinicRow = {
   name?: string | null;
   role?: string | null;
 };
+type SupabaseClinicMembershipRow = {
+  clinic?: SupabaseClinicJoinRow | SupabaseClinicJoinRow[] | null;
+  clinic_id?: string | null;
+  role?: string | null;
+};
 type LinkedSupabaseClinic = {
   appClinicKey: string;
   clinicId: string;
   name: string;
+  role?: string;
 };
 
 function getDynamicSupabaseClient() {
@@ -98,7 +104,44 @@ async function readLinkedSupabaseClinic(client: DynamicSupabaseClient, userId: s
     appClinicKey: clinic?.app_clinic_key || clinicId,
     clinicId,
     name: clinic?.name || data?.name || "연결된 치과",
+    role: data?.role ?? undefined,
   } satisfies LinkedSupabaseClinic;
+}
+
+async function readLinkedSupabaseClinics(client: DynamicSupabaseClient, userId: string) {
+  const { data, error } = await client
+    .from("clinic_memberships")
+    .select("clinic_id,role,clinic:clinics(id,name,app_clinic_key)")
+    .eq("user_id", userId);
+
+  assertNoSupabaseError(error);
+
+  const linkedClinics: LinkedSupabaseClinic[] = ((data ?? []) as SupabaseClinicMembershipRow[])
+    .flatMap((membership) => {
+      const clinic = getJoinedClinic(membership.clinic);
+      const clinicId = clinic?.id || membership.clinic_id || "";
+
+      if (!clinicId) {
+        return [];
+      }
+
+      const linkedClinic: LinkedSupabaseClinic = {
+        appClinicKey: clinic?.app_clinic_key || clinicId,
+        clinicId,
+        name: clinic?.name || "연결된 치과",
+        role: membership.role ?? undefined,
+      };
+
+      return [linkedClinic];
+    });
+
+  if (linkedClinics.length) {
+    return linkedClinics;
+  }
+
+  const fallbackClinic = await readLinkedSupabaseClinic(client, userId);
+
+  return fallbackClinic ? [fallbackClinic] : [];
 }
 
 function getClinicTemplate(settings: AdminSettings, linkedClinic: LinkedSupabaseClinic) {
@@ -127,6 +170,58 @@ function buildSettingsForLinkedClinic(settings: AdminSettings, linkedClinic: Lin
   });
 }
 
+async function readAdminSettingsSnapshot(client: DynamicSupabaseClient, clinicId: string) {
+  const { data, error } = await client
+    .from("admin_settings_snapshots")
+    .select("payload,app_active_clinic_key,updated_at")
+    .eq("clinic_id", clinicId)
+    .maybeSingle<AdminSettingsSnapshotRow>();
+
+  assertNoSupabaseError(error);
+
+  return data?.payload ? (data.payload as AdminSettings) : null;
+}
+
+function buildSettingsForLinkedClinics(
+  baseSettings: AdminSettings,
+  linkedClinics: LinkedSupabaseClinic[],
+  snapshots: Map<string, AdminSettings>,
+) {
+  const normalizedBaseSettings = normalizeAdminSettings(baseSettings);
+  const clinics = linkedClinics.map((linkedClinic) => {
+    const snapshot = snapshots.get(linkedClinic.clinicId);
+    const template = getClinicTemplate(snapshot ?? normalizedBaseSettings, linkedClinic);
+
+    return {
+      ...template,
+      id: linkedClinic.appClinicKey,
+      name: linkedClinic.name,
+    } satisfies ClinicSettings;
+  });
+  const activeClinicId = clinics.some((clinic) => clinic.id === normalizedBaseSettings.activeClinicId)
+    ? normalizedBaseSettings.activeClinicId
+    : clinics[0]?.id ?? defaultAdminSettings.activeClinicId;
+
+  return normalizeAdminSettings({
+    activeClinicId,
+    clinics: clinics.length ? clinics : normalizedBaseSettings.clinics,
+  });
+}
+
+function findLinkedClinicForSettings(settings: AdminSettings, linkedClinics: LinkedSupabaseClinic[]) {
+  const normalizedSettings = normalizeAdminSettings(settings);
+
+  return (
+    linkedClinics.find(
+      (clinic) =>
+        clinic.appClinicKey === normalizedSettings.activeClinicId ||
+        clinic.clinicId === normalizedSettings.activeClinicId,
+    ) ??
+    linkedClinics[0] ??
+    null
+  );
+}
+
 export async function readSupabaseAdminSettings(baseSettings: AdminSettings) {
   const client = getDynamicSupabaseClient();
 
@@ -140,25 +235,24 @@ export async function readSupabaseAdminSettings(baseSettings: AdminSettings) {
     return null;
   }
 
-  const linkedClinic = await readLinkedSupabaseClinic(client, user.id);
+  const linkedClinics = await readLinkedSupabaseClinics(client, user.id);
 
-  if (!linkedClinic) {
+  if (!linkedClinics.length) {
     return null;
   }
 
-  const { data, error } = await client
-    .from("admin_settings_snapshots")
-    .select("payload,app_active_clinic_key,updated_at")
-    .eq("clinic_id", linkedClinic.clinicId)
-    .maybeSingle<AdminSettingsSnapshotRow>();
+  const snapshots = new Map<string, AdminSettings>();
+  await Promise.all(
+    linkedClinics.map(async (linkedClinic) => {
+      const snapshot = await readAdminSettingsSnapshot(client, linkedClinic.clinicId);
 
-  assertNoSupabaseError(error);
+      if (snapshot) {
+        snapshots.set(linkedClinic.clinicId, snapshot);
+      }
+    }),
+  );
 
-  if (!data?.payload) {
-    return buildSettingsForLinkedClinic(baseSettings, linkedClinic);
-  }
-
-  return buildSettingsForLinkedClinic(data.payload as AdminSettings, linkedClinic);
+  return buildSettingsForLinkedClinics(baseSettings, linkedClinics, snapshots);
 }
 
 export async function saveSupabaseAdminSettings(settings: AdminSettings) {
@@ -174,7 +268,8 @@ export async function saveSupabaseAdminSettings(settings: AdminSettings) {
     return false;
   }
 
-  const linkedClinic = await readLinkedSupabaseClinic(client, user.id);
+  const linkedClinics = await readLinkedSupabaseClinics(client, user.id);
+  const linkedClinic = findLinkedClinicForSettings(settings, linkedClinics);
 
   if (!linkedClinic) {
     return false;
