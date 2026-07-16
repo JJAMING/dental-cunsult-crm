@@ -101,7 +101,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <form action={signOutAction} className="absolute bottom-20 left-5 right-5">
           <button
             type="submit"
-            className="flex w-full items-center gap-3 rounded-full border border-pebble px-4 py-3 text-sm font-bold text-slate transition hover:border-monday-violet hover:bg-periwinkle hover:text-ink"
+            className="flex w-full cursor-pointer items-center gap-3 rounded-full border border-pebble px-4 py-3 text-sm font-bold text-slate transition hover:border-monday-violet hover:bg-periwinkle hover:text-ink"
           >
             <LogOut className="h-4 w-4" aria-hidden />
             로그아웃
@@ -184,7 +184,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <form action={signOutAction} className="mt-2 lg:hidden">
             <button
               type="submit"
-              className="inline-flex h-9 items-center gap-2 rounded-full border border-pebble bg-white px-3 text-xs font-bold text-slate"
+              className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-full border border-pebble bg-white px-3 text-xs font-bold text-slate"
             >
               <LogOut className="h-3.5 w-3.5" aria-hidden />
               로그아웃

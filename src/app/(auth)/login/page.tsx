@@ -74,7 +74,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           </label>
           <button
             formAction={signInAction}
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-monday-violet px-5 text-sm font-bold text-white transition hover:brightness-95"
+            className="flex h-12 w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-monday-violet px-5 text-sm font-bold text-white transition hover:brightness-95"
           >
             로그인
             <ArrowRight className="h-4 w-4" aria-hidden />
