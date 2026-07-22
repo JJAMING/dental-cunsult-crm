@@ -1412,7 +1412,9 @@ function probeJsonSnapshotFile(filePath) {
       adapterId: "json_snapshot",
       label: "JSON snapshot adapter",
       readOnly: true,
-      syncReady: true,
+      // A generic JSON settings file is not a Dentweb export. Only mark the
+      // adapter ready after the expected patient or appointment arrays exist.
+      syncReady: hasSyncArrays,
       status: hasSyncArrays ? "ready" : "empty_snapshot",
       message: hasSyncArrays
         ? "JSON snapshot can be synced read-only."
