@@ -18,6 +18,7 @@ const baseInputClass =
 const amountFormatter = new Intl.NumberFormat("ko-KR");
 
 export type ConsultationFormInput = Omit<Consultation, "id">;
+type ConsultationFormInitialValues = Partial<ConsultationFormInput>;
 
 type FormState = {
   date: string;
@@ -369,10 +370,12 @@ function patientTypeLabel(patientType: PatientType) {
 function createFormState({
   consultation,
   enabledOptions,
+  initialValues,
   mode = "default",
 }: {
   consultation?: Consultation;
   enabledOptions: Record<OptionGroupKey, string[]>;
+  initialValues?: ConsultationFormInitialValues;
   mode?: FormMode;
 }): FormState {
   if (consultation) {
@@ -425,7 +428,7 @@ function createFormState({
     };
   }
 
-  return {
+  const defaultState = {
     date: getTodayInputValue(),
     patientName: "",
     chartNo: "",
@@ -442,10 +445,48 @@ function createFormState({
     disagreementReason: enabledOptions.disagreementReasons[0] ?? "선택 안함",
     memo: "",
   };
+
+  if (!initialValues) {
+    return defaultState;
+  }
+
+  const patientType = initialValues.patientType
+    ? patientTypeLabel(initialValues.patientType)
+    : defaultState.patientType;
+
+  return {
+    ...defaultState,
+    date: initialValues.date ?? defaultState.date,
+    patientName: initialValues.patientName ?? defaultState.patientName,
+    chartNo: initialValues.chartNo ?? defaultState.chartNo,
+    consultationAmount:
+      initialValues.consultationAmount === undefined
+        ? defaultState.consultationAmount
+        : String(initialValues.consultationAmount),
+    agreedAmount:
+      initialValues.agreedAmount === undefined ? defaultState.agreedAmount : String(initialValues.agreedAmount),
+    consultedTeeth:
+      initialValues.consultedTeeth === undefined ? defaultState.consultedTeeth : String(initialValues.consultedTeeth),
+    agreedTeeth:
+      initialValues.agreedTeeth === undefined ? defaultState.agreedTeeth : String(initialValues.agreedTeeth),
+    patientType,
+    counselor: initialValues.counselor ?? defaultState.counselor,
+    visitChannel: getAllowedVisitChannel(
+      patientType,
+      initialValues.visitChannel ?? defaultState.visitChannel,
+      enabledOptions.visitChannels,
+    ),
+    treatmentCategory: initialValues.treatmentCategory ?? defaultState.treatmentCategory,
+    doctor: initialValues.doctor ?? defaultState.doctor,
+    result: initialValues.result ? resultLabelByValue[initialValues.result] : defaultState.result,
+    disagreementReason: initialValues.disagreementReason ?? defaultState.disagreementReason,
+    memo: initialValues.memo ?? defaultState.memo,
+  };
 }
 
 export function ConsultationFormDialog({
   consultation,
+  initialValues,
   mode = "default",
   title,
   submitLabel,
@@ -454,6 +495,7 @@ export function ConsultationFormDialog({
   saveErrorMessage = "",
 }: {
   consultation?: Consultation;
+  initialValues?: ConsultationFormInitialValues;
   saveErrorMessage?: string;
   mode?: FormMode;
   title: string;
@@ -470,7 +512,7 @@ export function ConsultationFormDialog({
     [],
   );
   const [formState, setFormState] = useState<FormState>(() =>
-    createFormState({ consultation, enabledOptions, mode }),
+    createFormState({ consultation, enabledOptions, initialValues, mode }),
   );
   const resultOptions = useMemo(
     () => uniqueOptions([...enabledOptions.consultationResults, "동의 후 취소"]),

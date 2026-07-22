@@ -83,18 +83,6 @@ function formatPhone(value?: string) {
   return value || "-";
 }
 
-function formatWait(value?: number | null) {
-  if (value === null || value === undefined || value < 0) {
-    return "-";
-  }
-
-  if (value < 60) {
-    return `${value}분`;
-  }
-
-  return `${Math.floor(value / 60)}시간 ${value % 60}분`;
-}
-
 function StatusBadge({ patient }: { patient: DentwebReceptionPatient }) {
   return (
     <span
@@ -110,9 +98,11 @@ function StatusBadge({ patient }: { patient: DentwebReceptionPatient }) {
 function ReceptionTable({
   patients,
   onSelect,
+  onConsult,
 }: {
   patients: DentwebReceptionPatient[];
   onSelect: (patient: DentwebReceptionPatient) => void;
+  onConsult: (patient: DentwebReceptionPatient) => void;
 }) {
   return (
     <div className="overflow-x-auto">
@@ -125,10 +115,9 @@ function ReceptionTable({
             <th>연령/성별</th>
             <th>구분</th>
             <th>예약시각</th>
-            <th>대기</th>
             <th>Dr.</th>
             <th>체어</th>
-            <th aria-label="상세 보기" />
+            <th aria-label="접수 환자 작업" />
           </tr>
         </thead>
         <tbody>
@@ -154,17 +143,25 @@ function ReceptionTable({
                 </span>
               </td>
               <td className="metric-number font-bold text-ink">{formatTime(patient.reservationTime)}</td>
-              <td className="metric-number font-bold text-slate">{formatWait(patient.waitMinutes)}</td>
               <td>{patient.doctor || "-"}</td>
               <td>{patient.chair || "-"}</td>
               <td>
-                <button
-                  type="button"
-                  onClick={() => onSelect(patient)}
-                  className="inline-flex h-8 items-center rounded-md border border-pebble bg-white px-2.5 text-xs font-bold text-slate transition hover:border-monday-violet hover:text-monday-violet"
-                >
-                  상세
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onSelect(patient)}
+                    className="inline-flex h-8 items-center rounded-md border border-pebble bg-white px-2.5 text-xs font-bold text-slate transition hover:border-monday-violet hover:text-monday-violet"
+                  >
+                    상세
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onConsult(patient)}
+                    className="inline-flex h-8 items-center rounded-md border border-monday-violet bg-periwinkle px-2.5 text-xs font-bold text-monday-violet transition hover:brightness-95"
+                  >
+                    상담
+                  </button>
+                </div>
               </td>
             </tr>
           ))}
@@ -187,7 +184,6 @@ function ReceptionDetailDialog({
     ["신환/구환", patient.patientType === "new" ? "신환" : "구환"],
     ["접수시각", formatReceptionAt(patient.receptionAt)],
     ["예약시각", formatTime(patient.reservationTime)],
-    ["대기시간", formatWait(patient.waitMinutes)],
     ["담당 Dr.", patient.doctor || "-"],
     ["담당직원", patient.staff || "-"],
     ["체어", patient.chair || "-"],
@@ -243,10 +239,12 @@ function ReceptionListDialog({
   patients,
   onClose,
   onSelect,
+  onConsult,
 }: {
   patients: DentwebReceptionPatient[];
   onClose: () => void;
   onSelect: (patient: DentwebReceptionPatient) => void;
+  onConsult: (patient: DentwebReceptionPatient) => void;
 }) {
   return (
     <div
@@ -272,13 +270,19 @@ function ReceptionListDialog({
             <X className="h-4 w-4" aria-hidden />
           </button>
         </header>
-        <ReceptionTable patients={patients} onSelect={onSelect} />
+        <ReceptionTable patients={patients} onSelect={onSelect} onConsult={onConsult} />
       </section>
     </div>
   );
 }
 
-export function TodayReceptionBoard({ clinicId }: { clinicId: string }) {
+export function TodayReceptionBoard({
+  clinicId,
+  onConsult,
+}: {
+  clinicId: string;
+  onConsult?: (patient: DentwebReceptionPatient) => void;
+}) {
   const [patients, setPatients] = useState<DentwebReceptionPatient[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [message, setMessage] = useState("");
@@ -336,6 +340,11 @@ export function TodayReceptionBoard({ clinicId }: { clinicId: string }) {
     setIsLoading(true);
     setMessage("");
     setReloadKey((current) => current + 1);
+  };
+  const openConsultation = (patient: DentwebReceptionPatient) => {
+    setSelectedPatient(null);
+    setIsAllListOpen(false);
+    onConsult?.(patient);
   };
 
   return (
@@ -402,7 +411,11 @@ export function TodayReceptionBoard({ clinicId }: { clinicId: string }) {
       ) : message ? (
         <div className="px-5 py-10 text-center text-sm font-bold text-[#b94b10]">{message}</div>
       ) : visiblePatients.length ? (
-        <ReceptionTable patients={visiblePatients} onSelect={setSelectedPatient} />
+        <ReceptionTable
+          patients={visiblePatients}
+          onSelect={setSelectedPatient}
+          onConsult={openConsultation}
+        />
       ) : (
         <div className="px-5 py-10 text-center text-sm font-bold text-slate">선택한 상태의 접수 환자가 없습니다.</div>
       )}
@@ -421,6 +434,7 @@ export function TodayReceptionBoard({ clinicId }: { clinicId: string }) {
             setSelectedPatient(patient);
             setIsAllListOpen(false);
           }}
+          onConsult={openConsultation}
         />
       ) : null}
       {selectedPatient ? <ReceptionDetailDialog patient={selectedPatient} onClose={() => setSelectedPatient(null)} /> : null}

@@ -15,14 +15,19 @@ import {
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { MonthlyConsentChart } from "@/components/reports/monthly-consent-chart";
+import {
+  ConsultationFormDialog,
+  type ConsultationFormInput,
+} from "@/components/consultations/consultation-form-dialog";
 import { TodayReceptionBoard } from "@/components/dashboard/today-reception-board";
+import { MonthlyConsentChart } from "@/components/reports/monthly-consent-chart";
 import { StatusPill } from "@/components/ui/status-pill";
 import { useAdminSettings } from "@/hooks/use-admin-settings";
 import { useConsultations } from "@/hooks/use-consultations";
 import { useRecallRecords } from "@/hooks/use-recall-records";
 import type { RecallRecord } from "@/hooks/use-recall-records";
 import { getDashboardGoalForMonth } from "@/lib/admin-settings";
+import type { DentwebReceptionPatient } from "@/lib/local-api-client";
 import {
   buildOpportunityRadarRows,
   findLowConsentSegment,
@@ -121,6 +126,16 @@ function toInputDate(date: Date) {
   const day = String(date.getDate()).padStart(2, "0");
 
   return `${year}-${month}-${day}`;
+}
+
+function toConsultationDate(receptionAt?: string) {
+  const digits = String(receptionAt ?? "").replace(/\D/g, "");
+
+  if (digits.length >= 8) {
+    return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+  }
+
+  return toInputDate(new Date());
 }
 
 function getDailyDashboardMessage(date: string) {
@@ -702,7 +717,7 @@ function HighlightPanel({
 
 export function DashboardWorkspace() {
   const { activeClinic } = useAdminSettings();
-  const { consultations } = useConsultations({ clinicId: activeClinic.id });
+  const { consultations, addConsultation } = useConsultations({ clinicId: activeClinic.id });
   const { recordsByConsultationId } = useRecallRecords();
   const initialPeriod = useMemo(() => getInitialPeriod(), []);
   const todayValue = useMemo(() => toInputDate(new Date()), []);
@@ -710,6 +725,8 @@ export function DashboardWorkspace() {
   const [selectedMonth, setSelectedMonth] = useState(initialPeriod.month);
   const [viewMode, setViewMode] = useState<ViewMode>("month");
   const [selectedWeek, setSelectedWeek] = useState(1);
+  const [consultationPatient, setConsultationPatient] = useState<DentwebReceptionPatient | null>(null);
+  const [consultationSaveErrorMessage, setConsultationSaveErrorMessage] = useState("");
   const weekOptions = useMemo(
     () => getWeekOptions(selectedYear, selectedMonth),
     [selectedMonth, selectedYear],
@@ -1061,7 +1078,45 @@ export function DashboardWorkspace() {
         </div>
       </section>
 
-      <TodayReceptionBoard key={activeClinic.id} clinicId={activeClinic.id} />
+      <TodayReceptionBoard
+        key={activeClinic.id}
+        clinicId={activeClinic.id}
+        onConsult={(patient) => {
+          setConsultationSaveErrorMessage("");
+          setConsultationPatient(patient);
+        }}
+      />
+
+      {consultationPatient ? (
+        <ConsultationFormDialog
+          key={`${consultationPatient.patientId}-${consultationPatient.chartNo}-${consultationPatient.receptionAt}`}
+          title="신규 상담 등록"
+          submitLabel="등록"
+          initialValues={{
+            date: toConsultationDate(consultationPatient.receptionAt),
+            patientName: consultationPatient.patientName,
+            chartNo: consultationPatient.chartNo,
+            patientType: consultationPatient.patientType,
+            doctor: consultationPatient.doctor,
+          }}
+          onClose={() => {
+            setConsultationSaveErrorMessage("");
+            setConsultationPatient(null);
+          }}
+          onSubmit={async (input: ConsultationFormInput) => {
+            try {
+              setConsultationSaveErrorMessage("");
+              await addConsultation(input);
+              setConsultationPatient(null);
+            } catch (error) {
+              setConsultationSaveErrorMessage(
+                error instanceof Error ? error.message : "상담일지 저장에 실패했습니다.",
+              );
+            }
+          }}
+          saveErrorMessage={consultationSaveErrorMessage}
+        />
+      ) : null}
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <FocusCard
