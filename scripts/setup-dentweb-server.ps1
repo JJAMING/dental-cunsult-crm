@@ -11,7 +11,16 @@ param(
   [ValidateRange(1024, 65535)]
   [int]$Port = 34254,
 
-  [string]$PairingCode
+  [string]$PairingCode,
+
+  [string]$DentwebSqlServer,
+
+  [ValidateRange(1, 65535)]
+  [int]$DentwebSqlPort = 1436,
+
+  [string]$DentwebSqlDatabase = "DentWeb",
+
+  [string]$DentwebSqlUser = "dwpublic"
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,6 +85,20 @@ $serverConfig = @{
   autoDiscoveryEnabled = $true
   dentwebSourcePath = $dentwebSourcePath
   dentwebSourceMapping = $existingConfig.dentwebSourceMapping
+  dentwebSqlServer = if ($DentwebSqlServer) {
+    @{
+      server = $DentwebSqlServer.Trim()
+      port = $DentwebSqlPort
+      database = $DentwebSqlDatabase.Trim()
+      user = $DentwebSqlUser.Trim()
+      encrypt = $false
+      trustServerCertificate = $true
+    }
+  } elseif ($null -ne $existingConfig.dentwebSqlServer) {
+    $existingConfig.dentwebSqlServer
+  } else {
+    $null
+  }
 }
 
 $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
@@ -88,10 +111,21 @@ if (-not $serviceRoleKey) {
   throw "A Supabase service role key is required."
 }
 
-$secretsContent = @(
+$dentwebSqlPassword = ""
+if ($DentwebSqlServer) {
+  Write-Host "Enter the Dentweb read-only SQL password for this server PC only." -ForegroundColor Cyan
+  $dentwebSqlPassword = ConvertTo-PlainText (Read-Host -AsSecureString "Dentweb SQL password")
+  if (-not $dentwebSqlPassword) {
+    throw "A Dentweb SQL password is required when -DentwebSqlServer is supplied."
+  }
+}
+
+$secretsLines = @(
   "DENTAL_CONSULT_SUPABASE_URL=$SupabaseUrl",
-  "DENTAL_CONSULT_SUPABASE_SERVICE_ROLE_KEY=$serviceRoleKey"
-) -join [Environment]::NewLine
+  "DENTAL_CONSULT_SUPABASE_SERVICE_ROLE_KEY=$serviceRoleKey",
+  $(if ($dentwebSqlPassword) { "DENTWEB_SQL_PASSWORD=$dentwebSqlPassword" })
+) | Where-Object { $_ }
+$secretsContent = $secretsLines -join [Environment]::NewLine
 [System.IO.File]::WriteAllText($secretsPath, "$secretsContent$([Environment]::NewLine)", $utf8WithoutBom)
 
 try {
@@ -155,4 +189,9 @@ Write-Host "Pairing code: $PairingCode" -ForegroundColor Yellow
 if ($lanAddresses) {
   $lanAddresses | ForEach-Object { Write-Host "Client URL: http://${_}:$Port" }
 }
-Write-Host "Next: Open Admin Mode on the server PC, select Server Mode, then run Dentweb server discovery." -ForegroundColor Cyan
+if ($DentwebSqlServer) {
+  Write-Host "Dentweb SQL: $DentwebSqlServer`:$DentwebSqlPort / $DentwebSqlDatabase (read-only)" -ForegroundColor Cyan
+  Write-Host "Next: In the desktop app, run the Dentweb read-only connection test and sync." -ForegroundColor Cyan
+} else {
+  Write-Host "Next: Open Admin Mode on the server PC, select Server Mode, then run Dentweb server discovery." -ForegroundColor Cyan
+}

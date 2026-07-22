@@ -59,6 +59,7 @@ const defaultConfig = {
   autoDiscoveryEnabled: true,
   dentwebSourcePath: "",
   dentwebSourceMapping: null,
+  dentwebSqlServer: null,
 };
 
 defaultConfig.clinicName = "Acro Dental";
@@ -241,9 +242,15 @@ const localDbIndexDefinitions = [
 ];
 
 let sqliteModule;
+let mssqlModule;
 let localDb;
 let supabaseSyncInProgress = false;
 let supabaseSyncTimer;
+const serverSecretKeys = new Set([
+  "DENTAL_CONSULT_SUPABASE_URL",
+  "DENTAL_CONSULT_SUPABASE_SERVICE_ROLE_KEY",
+  "DENTWEB_SQL_PASSWORD",
+]);
 
 function loadServerSecrets() {
   if (!fs.existsSync(serverSecretsPath)) {
@@ -254,9 +261,9 @@ function loadServerSecrets() {
     const lines = fs.readFileSync(serverSecretsPath, "utf8").split(/\r?\n/);
 
     lines.forEach((line) => {
-      const matched = line.match(/^\s*(DENTAL_CONSULT_SUPABASE_(?:URL|SERVICE_ROLE_KEY))\s*=\s*(.*)\s*$/);
+      const matched = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
 
-      if (!matched || process.env[matched[1]]) {
+      if (!matched || !serverSecretKeys.has(matched[1]) || process.env[matched[1]]) {
         return;
       }
 
@@ -272,6 +279,46 @@ function loadServerSecrets() {
 }
 
 loadServerSecrets();
+
+function persistServerSecret(key, value) {
+  if (!serverSecretKeys.has(key)) {
+    throw new Error("Unsupported server secret key.");
+  }
+
+  const normalizedValue = String(value || "").trim();
+
+  if (!normalizedValue) {
+    throw new Error("A non-empty server secret is required.");
+  }
+
+  ensureRuntimeDir();
+  const existingLines = fs.existsSync(serverSecretsPath)
+    ? fs.readFileSync(serverSecretsPath, "utf8").split(/\r?\n/)
+    : [];
+  const nextLines = [];
+  let replaced = false;
+
+  existingLines.forEach((line) => {
+    const matched = line.match(/^\s*([A-Z0-9_]+)\s*=/);
+
+    if (matched?.[1] === key) {
+      nextLines.push(`${key}=${normalizedValue}`);
+      replaced = true;
+      return;
+    }
+
+    if (line.trim()) {
+      nextLines.push(line);
+    }
+  });
+
+  if (!replaced) {
+    nextLines.push(`${key}=${normalizedValue}`);
+  }
+
+  fs.writeFileSync(serverSecretsPath, `${nextLines.join("\n")}\n`, { mode: 0o600 });
+  process.env[key] = normalizedValue;
+}
 
 function getCommonDentwebPaths() {
   const programFiles = process.env.ProgramFiles;
@@ -339,6 +386,13 @@ function getConfig() {
     pairingCode: process.env.DENTWEB_PAIRING_CODE || config.pairingCode,
     dentwebSourcePath: process.env.DENTWEB_SOURCE_PATH || sanitizeManualPath(config.dentwebSourcePath),
     dentwebSourceMapping: normalizeDentwebSourceMapping(config.dentwebSourceMapping),
+    dentwebSqlServer: normalizeDentwebSqlServerConfig({
+      ...config.dentwebSqlServer,
+      server: process.env.DENTWEB_SQL_SERVER || config.dentwebSqlServer?.server,
+      port: process.env.DENTWEB_SQL_PORT || config.dentwebSqlServer?.port,
+      database: process.env.DENTWEB_SQL_DATABASE || config.dentwebSqlServer?.database,
+      user: process.env.DENTWEB_SQL_USER || config.dentwebSqlServer?.user,
+    }),
   };
 }
 
@@ -358,6 +412,76 @@ function persistDentwebSourcePath(config, sourcePath) {
   config.dentwebSourcePath = normalizedSourcePath;
 
   return normalizedSourcePath;
+}
+
+function normalizeDentwebSqlServerConfig(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const server = String(value.server || value.host || "").trim();
+  const database = String(value.database || "").trim();
+  const user = String(value.user || value.username || "").trim();
+  const parsedPort = Number(value.port);
+  const port = Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535 ? parsedPort : 1433;
+
+  if (!server || !database || !user) {
+    return null;
+  }
+
+  return {
+    adapterId: "mssql_dentweb_readonly",
+    server,
+    port,
+    database,
+    user,
+    encrypt: Boolean(value.encrypt),
+    trustServerCertificate: value.trustServerCertificate !== false,
+  };
+}
+
+function getDentwebSqlServerConfig(config) {
+  return normalizeDentwebSqlServerConfig(config.dentwebSqlServer);
+}
+
+function toPublicDentwebSqlServerConfig(config) {
+  const databaseConfig = getDentwebSqlServerConfig(config);
+
+  if (!databaseConfig) {
+    return {
+      configured: false,
+      hasPassword: Boolean(process.env.DENTWEB_SQL_PASSWORD),
+      config: null,
+    };
+  }
+
+  return {
+    configured: true,
+    hasPassword: Boolean(process.env.DENTWEB_SQL_PASSWORD),
+    config: databaseConfig,
+  };
+}
+
+function persistDentwebSqlServerConfig(config, value, password) {
+  const normalizedConfig = normalizeDentwebSqlServerConfig(value);
+
+  if (!normalizedConfig) {
+    throw new Error("SQL Server address, port, database, and read-only user are required.");
+  }
+
+  if (typeof password === "string" && password.trim()) {
+    persistServerSecret("DENTWEB_SQL_PASSWORD", password);
+  }
+
+  const nextConfig = {
+    ...ensureRuntimeConfig(),
+    dentwebSqlServer: normalizedConfig,
+  };
+
+  writeRuntimeConfig(nextConfig);
+  config.dentwebSqlServer = normalizedConfig;
+
+  return toPublicDentwebSqlServerConfig(config);
 }
 
 const dentwebMappingFields = {
@@ -506,6 +630,210 @@ function setLocalDbMeta(db, key, value) {
       value = excluded.value,
       updated_at = excluded.updated_at
   `).run(key, String(value), new Date().toISOString());
+}
+
+function getMssqlModule() {
+  if (mssqlModule) {
+    return mssqlModule;
+  }
+
+  try {
+    mssqlModule = require("mssql");
+    return mssqlModule;
+  } catch {
+    return null;
+  }
+}
+
+function getDentwebSqlServerSourceLabel(config) {
+  const databaseConfig = getDentwebSqlServerConfig(config);
+
+  return databaseConfig
+    ? `mssql://${databaseConfig.server}:${databaseConfig.port}/${databaseConfig.database}`
+    : "";
+}
+
+function getDentwebMssqlConnectionOptions(config) {
+  const databaseConfig = getDentwebSqlServerConfig(config);
+  const password = String(process.env.DENTWEB_SQL_PASSWORD || "").trim();
+
+  if (!databaseConfig || !password) {
+    throw new Error("Dentweb SQL Server connection is not configured on this server PC.");
+  }
+
+  return {
+    user: databaseConfig.user,
+    password,
+    server: databaseConfig.server,
+    port: databaseConfig.port,
+    database: databaseConfig.database,
+    options: {
+      encrypt: databaseConfig.encrypt,
+      trustServerCertificate: databaseConfig.trustServerCertificate,
+      enableArithAbort: true,
+    },
+    pool: {
+      max: 2,
+      min: 0,
+      idleTimeoutMillis: 10_000,
+    },
+    connectionTimeout: 8_000,
+    requestTimeout: 15_000,
+  };
+}
+
+async function withDentwebSqlServer(config, callback) {
+  const sql = getMssqlModule();
+
+  if (!sql?.ConnectionPool) {
+    throw new Error("The SQL Server read-only adapter is not installed.");
+  }
+
+  const pool = new sql.ConnectionPool(getDentwebMssqlConnectionOptions(config));
+
+  try {
+    await pool.connect();
+    return await callback({ sql, pool });
+  } finally {
+    try {
+      await pool.close();
+    } catch {
+      // Closing a failed read-only connection is best effort.
+    }
+  }
+}
+
+function formatDentwebAppointmentDate(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+
+  if (digits.length < 8) {
+    return "";
+  }
+
+  return digits.slice(0, 8);
+}
+
+function formatDentwebAppointmentTime(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+
+  return digits.length >= 12 ? digits.slice(8, 12) : "";
+}
+
+function mapDentwebAppointmentStatus(value) {
+  const status = Number(value);
+  const labels = {
+    0: "미이행",
+    1: "이행",
+    2: "취소",
+    3: "보류",
+  };
+
+  return labels[status] || "";
+}
+
+async function testDentwebSqlServerConnection(config) {
+  return withDentwebSqlServer(config, async ({ pool }) => {
+    await pool.request().query(`
+      SELECT TOP (0)
+        [n환자ID], [sz차트번호], [sz이름]
+      FROM [dbo].[PUB_V환자정보];
+
+      SELECT TOP (0)
+        [n환자ID], [sz예약시각], [sz메모]
+      FROM [dbo].[PUB_V예약정보];
+    `);
+
+    return {
+      ok: true,
+      readOnly: true,
+      source: getDentwebSqlServerSourceLabel(config),
+      message: "Dentweb SQL Server read-only views are reachable.",
+      checkedAt: new Date().toISOString(),
+    };
+  });
+}
+
+async function loadDentwebSqlServerReadOnlyAdapter(config) {
+  const sourcePath = getDentwebSqlServerSourceLabel(config);
+  const now = new Date();
+  const from = new Date(now);
+  const to = new Date(now);
+  from.setMonth(from.getMonth() - 12);
+  to.setMonth(to.getMonth() + 12);
+  const formatDate = (value) => value.toISOString().slice(0, 10).replace(/-/g, "");
+
+  return withDentwebSqlServer(config, async ({ sql, pool }) => {
+    const patientResult = await pool
+      .request()
+      .input("limit", sql.Int, 5000)
+      .query(`
+        SELECT TOP (@limit)
+          patient.[n환자ID] AS [sourceId],
+          patient.[sz차트번호] AS [chartNo],
+          patient.[sz이름] AS [patientName],
+          patient.[sz생년월일] AS [birthDate],
+          patient.[sz최종내원일] AS [lastVisitDate],
+          doctor.[sz이름] AS [doctor]
+        FROM [dbo].[PUB_V환자정보] AS patient
+        LEFT JOIN [dbo].[PUB_V직원정보] AS doctor
+          ON doctor.[nID] = patient.[n담당의사]
+        WHERE ISNULL(patient.[sz차트번호], '') <> ''
+          AND ISNULL(patient.[sz이름], '') <> ''
+        ORDER BY patient.[n환자ID] DESC;
+      `);
+    const appointmentResult = await pool
+      .request()
+      .input("limit", sql.Int, 5000)
+      .input("fromDate", sql.VarChar(8), formatDate(from))
+      .input("toDate", sql.VarChar(8), formatDate(to))
+      .query(`
+        SELECT TOP (@limit)
+          appointment.[n환자ID] AS [patientId],
+          patient.[sz차트번호] AS [chartNo],
+          COALESCE(NULLIF(patient.[sz이름], ''), appointment.[sz이름]) AS [patientName],
+          appointment.[sz예약시각] AS [appointmentDateTime],
+          appointment.[n이행현황] AS [statusCode],
+          appointment.[sz예약내용] AS [appointmentNote],
+          appointment.[sz메모] AS [memo],
+          doctor.[sz이름] AS [doctor]
+        FROM [dbo].[PUB_V예약정보] AS appointment
+        LEFT JOIN [dbo].[PUB_V환자정보] AS patient
+          ON patient.[n환자ID] = appointment.[n환자ID]
+        LEFT JOIN [dbo].[PUB_V직원정보] AS doctor
+          ON doctor.[nID] = appointment.[n담당의사]
+        WHERE ISNULL(appointment.[sz예약시각], '') >= @fromDate
+          AND ISNULL(appointment.[sz예약시각], '') <= @toDate
+        ORDER BY appointment.[sz예약시각] DESC;
+      `);
+
+    const patients = patientResult.recordset.map((row) => ({
+      sourceId: normalizeMappedValue(row.sourceId),
+      chartNo: normalizeMappedValue(row.chartNo),
+      patientName: normalizeMappedValue(row.patientName),
+      birthDate: normalizeMappedValue(row.birthDate),
+      lastVisitDate: normalizeMappedValue(row.lastVisitDate),
+      doctor: normalizeMappedValue(row.doctor),
+    }));
+    const appointments = appointmentResult.recordset.map((row, index) => ({
+      sourceId: `${normalizeMappedValue(row.patientId)}:${normalizeMappedValue(row.appointmentDateTime)}:${index}`,
+      chartNo: normalizeMappedValue(row.chartNo),
+      patientName: normalizeMappedValue(row.patientName),
+      appointmentDate: formatDentwebAppointmentDate(row.appointmentDateTime),
+      appointmentTime: formatDentwebAppointmentTime(row.appointmentDateTime),
+      doctor: normalizeMappedValue(row.doctor),
+      status: mapDentwebAppointmentStatus(row.statusCode),
+      appointmentNote: normalizeMappedValue(row.appointmentNote),
+      memo: normalizeMappedValue(row.memo),
+    }));
+
+    return {
+      adapterId: "mssql_dentweb_readonly",
+      sourcePath,
+      sourceFiles: [sourcePath],
+      patients,
+      appointments,
+    };
+  });
 }
 
 function getLocalDbMeta(db, key) {
@@ -1291,7 +1619,11 @@ function loadDentwebSqliteMappedAdapter(sourceFile, sourcePath, mapping) {
   }
 }
 
-function loadDentwebReadOnlyAdapter(config, sourcePath) {
+async function loadDentwebReadOnlyAdapter(config, sourcePath) {
+  if (getDentwebSqlServerConfig(config)) {
+    return loadDentwebSqlServerReadOnlyAdapter(config);
+  }
+
   const probePayload = buildDentwebSourceProbePayload(config, { dentwebPath: sourcePath });
   const selectedProbe = probePayload.selectedProbe;
 
@@ -2404,6 +2736,8 @@ function buildDentwebSourceMappingPayload(config) {
 
 function buildDentwebIntegrationStatusPayload(config, input = {}) {
   const statusPayload = buildLocalDbStatusPayload(config);
+  const sqlServerConfig = getDentwebSqlServerConfig(config);
+  const hasSqlServerPassword = Boolean(process.env.DENTWEB_SQL_PASSWORD);
   const sourcePath = sanitizeManualPath(input.dentwebPath || input.path || input.manualPath || config.dentwebSourcePath);
   const mapping = getDentwebSourceMapping(config);
   const checks = [];
@@ -2418,6 +2752,56 @@ function buildDentwebIntegrationStatusPayload(config, input = {}) {
     status: statusPayload.ok ? "pass" : "block",
     message: statusPayload.ok ? "중앙 DB가 준비되어 있습니다." : statusPayload.message || "중앙 DB를 사용할 수 없습니다.",
   });
+
+  if (sqlServerConfig) {
+    checks.push({
+      key: "dentweb_sql_server",
+      label: "Dentweb SQL Server",
+      status: "pass",
+      message: `Read-only target: ${getDentwebSqlServerSourceLabel(config)}`,
+    });
+    checks.push({
+      key: "dentweb_sql_credentials",
+      label: "Read-only credentials",
+      status: hasSqlServerPassword ? "pass" : "block",
+      message: hasSqlServerPassword
+        ? "A server-only SQL Server password is configured."
+        : "Add the Dentweb SQL Server password on the server PC.",
+    });
+
+    const readyToSync = statusPayload.ok && hasSqlServerPassword;
+    checks.push({
+      key: "read_only_sync",
+      label: "Read-only sync readiness",
+      status: readyToSync ? "pass" : "wait",
+      message: readyToSync
+        ? "Run the SQL Server connection test before the first sync."
+        : "The server-only SQL password is still required.",
+    });
+
+    return {
+      ok: true,
+      readOnly: true,
+      readyToSync,
+      status: readyToSync ? "ready_to_sync" : "action_required",
+      message: readyToSync
+        ? "Dentweb SQL Server integration is configured for read-only sync."
+        : "Dentweb SQL Server integration needs the server-only password.",
+      clinic: {
+        id: config.clinicId,
+        name: config.clinicName,
+      },
+      sourcePath: getDentwebSqlServerSourceLabel(config),
+      adapterId: "mssql_dentweb_readonly",
+      sourceProbeStatus: "sql_server_configured",
+      mappingConfigured: false,
+      previewRequired: false,
+      previewClean: false,
+      checks,
+      warnings: [],
+      checkedAt: new Date().toISOString(),
+    };
+  }
 
   if (!sourcePath) {
     checks.push({
@@ -2538,7 +2922,7 @@ function buildDentwebIntegrationStatusPayload(config, input = {}) {
   };
 }
 
-function runDentwebReadOnlySync(config, input = {}) {
+async function runDentwebReadOnlySync(config, input = {}) {
   const { db, error } = getLocalDb(config);
 
   if (!db) {
@@ -2550,23 +2934,28 @@ function runDentwebReadOnlySync(config, input = {}) {
     };
   }
 
-  const sourcePath = sanitizeManualPath(input.dentwebPath || input.path || input.manualPath || config.dentwebSourcePath);
+  const sqlServerSource = getDentwebSqlServerSourceLabel(config);
+  const sourcePath =
+    sqlServerSource ||
+    sanitizeManualPath(input.dentwebPath || input.path || input.manualPath || config.dentwebSourcePath);
 
   if (!sourcePath) {
     return {
       ok: false,
       error: "source_path_required",
-      message: "Select a Dentweb JSON file or folder before syncing.",
+      message: "Configure a Dentweb SQL Server connection or select a supported read-only source before syncing.",
       readOnly: true,
       rowCounts: getLocalDbRowCounts(db),
       lastSyncRun: getLastSyncRun(db, config.clinicId),
     };
   }
 
-  const preflightPayload = buildDentwebSyncPreflightPayload(config, {
-    ...input,
-    dentwebPath: sourcePath,
-  });
+  const preflightPayload = sqlServerSource
+    ? { ok: true, readOnly: true, required: false, message: "SQL Server read-only adapter is configured." }
+    : buildDentwebSyncPreflightPayload(config, {
+        ...input,
+        dentwebPath: sourcePath,
+      });
 
   if (!preflightPayload.ok) {
     return {
@@ -2585,9 +2974,11 @@ function runDentwebReadOnlySync(config, input = {}) {
   const { runId, startedAt } = startSyncRun(db, config, sourcePath);
 
   try {
-    const adapterPayload = loadDentwebReadOnlyAdapter(config, sourcePath);
+    const adapterPayload = await loadDentwebReadOnlyAdapter(config, sourcePath);
     const summary = upsertDentwebSnapshots(db, config, adapterPayload);
-    const savedSourcePath = persistDentwebSourcePath(config, adapterPayload.sourcePath);
+    const savedSourcePath = sqlServerSource
+      ? adapterPayload.sourcePath
+      : persistDentwebSourcePath(config, adapterPayload.sourcePath);
 
     finishSyncRun(db, runId, "success", summary);
 
@@ -2699,6 +3090,12 @@ function getRemoteAddress(request) {
   }
 
   return request.socket.remoteAddress || "";
+}
+
+function isLoopbackRequest(request) {
+  const remoteAddress = getRemoteAddress(request).replace(/^::ffff:/, "");
+
+  return remoteAddress === "127.0.0.1" || remoteAddress === "::1";
 }
 
 function sanitizeDeviceId(value) {
@@ -3847,6 +4244,8 @@ function buildHealthPayload(config, startedAt) {
       "/clients/:deviceId/reject",
       "/dentweb/discover",
       "/dentweb/connection-test",
+      "/dentweb/sql-server-config",
+      "/dentweb/sql-server-connection-test",
       "/dentweb/source-probe",
       "/dentweb/source-mapping",
       "/dentweb/mapping-preview",
@@ -4047,6 +4446,62 @@ async function handleDentwebConnectionTest(request, response, config) {
   });
 }
 
+async function handleDentwebSqlServerConfig(request, response, config) {
+  if (request.method === "GET") {
+    sendJson(response, 200, {
+      ok: true,
+      readOnly: true,
+      ...toPublicDentwebSqlServerConfig(config),
+      checkedAt: new Date().toISOString(),
+    });
+    return;
+  }
+
+  if (!isLoopbackRequest(request)) {
+    sendJson(response, 403, {
+      ok: false,
+      error: "local_server_only",
+      message: "SQL Server credentials can only be configured from the server PC itself.",
+    });
+    return;
+  }
+
+  try {
+    const body = await readJsonBody(request);
+    const saved = persistDentwebSqlServerConfig(config, body.config || body, body.password);
+
+    sendJson(response, 200, {
+      ok: true,
+      readOnly: true,
+      ...saved,
+      message: "Dentweb SQL Server read-only configuration was saved on this server PC.",
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    sendJson(response, 400, {
+      ok: false,
+      error: "invalid_sql_server_config",
+      message: error instanceof Error ? error.message : "Dentweb SQL Server configuration could not be saved.",
+    });
+  }
+}
+
+async function handleDentwebSqlServerConnectionTest(request, response, config) {
+  try {
+    const payload = await testDentwebSqlServerConnection(config);
+    sendJson(response, 200, payload);
+  } catch (error) {
+    sendJson(response, 400, {
+      ok: false,
+      readOnly: true,
+      error: "sql_server_connection_failed",
+      message: error instanceof Error ? error.message : "Dentweb SQL Server read-only connection failed.",
+      source: getDentwebSqlServerSourceLabel(config) || null,
+      checkedAt: new Date().toISOString(),
+    });
+  }
+}
+
 async function handleDentwebSourceProbe(request, response, config) {
   const body = request.method === "POST" ? await readJsonBody(request) : {};
   const payload = buildDentwebSourceProbePayload(config, body);
@@ -4156,7 +4611,7 @@ function handleDentwebSyncStatus(response, config) {
 
 async function handleDentwebSyncNow(request, response, config) {
   const body = await readJsonBody(request);
-  const payload = runDentwebReadOnlySync(config, body);
+  const payload = await runDentwebReadOnlySync(config, body);
 
   sendJson(response, payload.ok ? 200 : 400, payload);
 }
@@ -4201,6 +4656,19 @@ function createServer(config, startedAt) {
 
       if (request.method === "POST" && requestUrl.pathname === "/dentweb/connection-test") {
         await handleDentwebConnectionTest(request, response, config);
+        return;
+      }
+
+      if (
+        (request.method === "GET" || request.method === "POST") &&
+        requestUrl.pathname === "/dentweb/sql-server-config"
+      ) {
+        await handleDentwebSqlServerConfig(request, response, config);
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === "/dentweb/sql-server-connection-test") {
+        await handleDentwebSqlServerConnectionTest(request, response, config);
         return;
       }
 
