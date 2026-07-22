@@ -32,6 +32,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isDenseWorkspace = ["/consultations", "/recalls", "/reports", "/kpi-results", "/settings"].some(
     (path) => pathname === path || pathname.startsWith(`${path}/`),
   );
+  const isDashboard = pathname === "/dashboard";
   const localApiStatusLabel =
     localApiStatus.state === "connected"
       ? "서버 저장"
@@ -195,7 +196,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <main
           className={[
             "mx-auto w-full px-4 py-5 sm:px-5 lg:px-6 lg:py-6",
-            isDenseWorkspace ? "max-w-none" : "max-w-[1440px]",
+            isDenseWorkspace ? "max-w-none" : isDashboard ? "max-w-[1680px]" : "max-w-[1440px]",
           ].join(" ")}
         >
           {children}

@@ -1078,15 +1078,6 @@ export function DashboardWorkspace() {
         </div>
       </section>
 
-      <TodayReceptionBoard
-        key={activeClinic.id}
-        clinicId={activeClinic.id}
-        onConsult={(patient) => {
-          setConsultationSaveErrorMessage("");
-          setConsultationPatient(patient);
-        }}
-      />
-
       {consultationPatient ? (
         <ConsultationFormDialog
           key={`${consultationPatient.patientId}-${consultationPatient.chartNo}-${consultationPatient.receptionAt}`}
@@ -1158,6 +1149,15 @@ export function DashboardWorkspace() {
           tone="apricot"
         />
       </section>
+
+      <TodayReceptionBoard
+        key={activeClinic.id}
+        clinicId={activeClinic.id}
+        onConsult={(patient) => {
+          setConsultationSaveErrorMessage("");
+          setConsultationPatient(patient);
+        }}
+      />
 
       <section className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr_0.9fr]">
         <section className="crm-card p-5">
