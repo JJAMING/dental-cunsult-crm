@@ -521,11 +521,13 @@ export function ConsultationFormDialog({
     }));
   };
   const lastAutoSearchQueryRef = useRef("");
+  const patientSearchRequestIdRef = useRef(0);
 
   const runPatientSearch = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     const query = (formState.patientName.trim() || formState.chartNo.trim()).trim();
 
     if (!query) {
+      patientSearchRequestIdRef.current += 1;
       setIsPatientSearchDropdownOpen(false);
       if (!silent) {
         setPatientSearchState({
@@ -537,6 +539,7 @@ export function ConsultationFormDialog({
       return;
     }
 
+    const requestId = ++patientSearchRequestIdRef.current;
     setIsPatientSearchDropdownOpen(true);
 
     if (!silent) {
@@ -555,6 +558,10 @@ export function ConsultationFormDialog({
       });
       const patients = payload.patients ?? [];
 
+      if (requestId !== patientSearchRequestIdRef.current) {
+        return;
+      }
+
       setPatientSearchState({
         message: patients.length
           ? `${patients.length}명의 덴트웹 환자 후보를 찾았습니다.`
@@ -569,6 +576,10 @@ export function ConsultationFormDialog({
         status: "idle",
       });
     } catch {
+      if (requestId !== patientSearchRequestIdRef.current) {
+        return;
+      }
+
       if (!silent) {
         setPatientSearchState({
           message: "덴트웹 서버 또는 내부 API에 연결할 수 없습니다. 관리자 모드의 서버 상태를 확인하세요.",
@@ -618,16 +629,20 @@ export function ConsultationFormDialog({
   };
 
   const applyDentwebPatient = (patient: DentwebSnapshotPatient) => {
+    const selectedQuery = (patient.patientName || patient.chartNo || "").trim();
+
+    patientSearchRequestIdRef.current += 1;
+    lastAutoSearchQueryRef.current = selectedQuery;
     setFormState((current) => ({
       ...current,
       chartNo: patient.chartNo || current.chartNo,
       patientName: patient.patientName || current.patientName,
     }));
-    setPatientSearchState((current) => ({
-      ...current,
-      message: `${patient.patientName || "선택한 환자"} 정보를 상담 등록에 반영했습니다.`,
-      selectedPatientId: patient.id,
-    }));
+    setPatientSearchState({
+      message: "",
+      patients: [],
+      status: "idle",
+    });
     setIsPatientSearchDropdownOpen(false);
     void loadAppointmentsForPatient(patient);
   };
@@ -810,6 +825,7 @@ export function ConsultationFormDialog({
                         );
 
                         if (field.name === "patientName") {
+                          patientSearchRequestIdRef.current += 1;
                           setIsPatientSearchDropdownOpen(Boolean(event.target.value.trim()));
                           setPatientSearchState((current) => ({
                             ...current,
