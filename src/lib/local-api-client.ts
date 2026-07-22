@@ -97,6 +97,39 @@ export type DentwebPatientAppointmentsResponse = {
   readOnly?: boolean;
 };
 
+export type DentwebReceptionPatient = {
+  age?: number | null;
+  birthDate?: string;
+  chair?: string;
+  chartNo?: string;
+  detail?: string;
+  doctor?: string;
+  gender?: "female" | "male" | "";
+  patientId?: number | string;
+  patientName?: string;
+  patientType?: "new" | "returning";
+  phone?: string;
+  receptionAt?: string;
+  reservationTime?: string;
+  sequence: number;
+  staff?: string;
+  statusCode: number;
+  statusLabel: string;
+  waitMinutes?: number | null;
+};
+
+export type DentwebTodayReceptionResponse = {
+  checkedAt?: string;
+  clinicId?: string;
+  counts?: Record<string, number>;
+  date?: string;
+  error?: string;
+  message?: string;
+  ok: boolean;
+  patients?: DentwebReceptionPatient[];
+  readOnly?: boolean;
+};
+
 type LocalApiClientCredentials = {
   clinicName?: string;
   deviceId: string;
@@ -408,6 +441,24 @@ export async function loadDentwebPatientAppointments({
 
   return fetchLocalApiJson<DentwebPatientAppointmentsResponse>(
     `/dentweb/patients/appointments?${params.toString()}`,
+  );
+}
+
+export async function loadDentwebTodayReception({
+  clinicId,
+  date,
+}: {
+  clinicId: string;
+  date?: string;
+}) {
+  const params = new URLSearchParams({ clinicId });
+
+  if (date) {
+    params.set("date", date);
+  }
+
+  return fetchLocalApiJson<DentwebTodayReceptionResponse>(
+    `/dentweb/receptions/today?${params.toString()}`,
   );
 }
 

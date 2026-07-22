@@ -16,6 +16,7 @@ import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { MonthlyConsentChart } from "@/components/reports/monthly-consent-chart";
+import { TodayReceptionBoard } from "@/components/dashboard/today-reception-board";
 import { StatusPill } from "@/components/ui/status-pill";
 import { useAdminSettings } from "@/hooks/use-admin-settings";
 import { useConsultations } from "@/hooks/use-consultations";
@@ -1059,6 +1060,8 @@ export function DashboardWorkspace() {
           </div>
         </div>
       </section>
+
+      <TodayReceptionBoard key={activeClinic.id} clinicId={activeClinic.id} />
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <FocusCard

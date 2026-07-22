@@ -731,6 +731,182 @@ function mapDentwebAppointmentStatus(value) {
   return labels[status] || "";
 }
 
+function getKoreanDateDigits(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+
+  return `${values.year}${values.month}${values.day}`;
+}
+
+function normalizeDentwebReceptionDate(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+
+  return digits.length === 8 ? digits : getKoreanDateDigits();
+}
+
+function getDentwebRowValue(row, keys) {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(row || {}, key)) {
+      return row[key];
+    }
+  }
+
+  return undefined;
+}
+
+function formatDentwebReceptionTime(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+
+  if (digits.length < 4) {
+    return "";
+  }
+
+  return digits.slice(-4);
+}
+
+function getDentwebReceptionWaitMinutes(value, statusCode) {
+  if (![0, 1].includes(Number(statusCode))) {
+    return null;
+  }
+
+  const digits = String(value || "").replace(/\D/g, "");
+
+  if (digits.length < 12) {
+    return null;
+  }
+
+  const year = Number(digits.slice(0, 4));
+  const month = Number(digits.slice(4, 6));
+  const day = Number(digits.slice(6, 8));
+  const hour = Number(digits.slice(8, 10));
+  const minute = Number(digits.slice(10, 12));
+  const receivedAt = new Date(year, month - 1, day, hour, minute);
+  const elapsed = Math.floor((Date.now() - receivedAt.getTime()) / 60_000);
+
+  return Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : null;
+}
+
+function getDentwebReceptionAge(birthDate, referenceDate) {
+  const birthDigits = String(birthDate || "").replace(/\D/g, "");
+  const referenceDigits = String(referenceDate || "").replace(/\D/g, "");
+
+  if (birthDigits.length !== 8 || referenceDigits.length !== 8) {
+    return null;
+  }
+
+  const birthYear = Number(birthDigits.slice(0, 4));
+  const birthMonth = Number(birthDigits.slice(4, 6));
+  const birthDay = Number(birthDigits.slice(6, 8));
+  const referenceYear = Number(referenceDigits.slice(0, 4));
+  const referenceMonth = Number(referenceDigits.slice(4, 6));
+  const referenceDay = Number(referenceDigits.slice(6, 8));
+  let age = referenceYear - birthYear;
+
+  if (referenceMonth < birthMonth || (referenceMonth === birthMonth && referenceDay < birthDay)) {
+    age -= 1;
+  }
+
+  return Number.isFinite(age) && age >= 0 ? age : null;
+}
+
+function mapDentwebReceptionStatus(value) {
+  const status = Number(value);
+  const labels = {
+    0: "접수",
+    1: "준비완료",
+    2: "진료중",
+    3: "진료완료",
+    4: "수납완료",
+  };
+
+  return {
+    code: Number.isFinite(status) ? status : -1,
+    label: labels[status] || "확인 필요",
+  };
+}
+
+function mapDentwebReceptionRow(row, index, staffNames, chairNames, date) {
+  const status = mapDentwebReceptionStatus(getDentwebRowValue(row, ["n상태", "status", "Status"]));
+  const birthDate = normalizeMappedValue(getDentwebRowValue(row, ["sz생년월일", "birthDate"]));
+  const genderValue = getDentwebRowValue(row, ["b성별", "gender", "Gender"]);
+  const doctorId = normalizeMappedValue(getDentwebRowValue(row, ["n담당의사", "doctorId"]));
+  const staffId = normalizeMappedValue(getDentwebRowValue(row, ["담당직원", "n담당직원", "staffId"]));
+  const chairId = normalizeMappedValue(getDentwebRowValue(row, ["체어", "n체어", "chairId"]));
+  const receptionAt = normalizeMappedValue(getDentwebRowValue(row, ["sz접수시각", "receptionAt"]));
+  const isFemale = genderValue === true || genderValue === 1 || genderValue === "1";
+  const isNewPatient = getDentwebRowValue(row, ["b신환여부", "isNewPatient", "newPatient"]);
+
+  return {
+    sequence: index + 1,
+    statusCode: status.code,
+    statusLabel: status.label,
+    patientId: normalizeMappedValue(getDentwebRowValue(row, ["n환자ID", "patientId"])),
+    chartNo: normalizeMappedValue(getDentwebRowValue(row, ["sz차트번호", "chartNo"])),
+    patientName: normalizeMappedValue(getDentwebRowValue(row, ["sz이름", "patientName"])),
+    birthDate,
+    age: getDentwebReceptionAge(birthDate, date),
+    gender: genderValue === null || genderValue === undefined ? "" : isFemale ? "female" : "male",
+    patientType: isNewPatient === true || isNewPatient === 1 || isNewPatient === "1" ? "new" : "returning",
+    receptionAt,
+    reservationTime: formatDentwebReceptionTime(getDentwebRowValue(row, ["sz예약시각", "reservationTime"])),
+    waitMinutes: getDentwebReceptionWaitMinutes(receptionAt, status.code),
+    doctor: staffNames.get(doctorId) || "-",
+    staff: staffNames.get(staffId) || "-",
+    chair: chairNames.get(chairId) || "-",
+    phone: normalizeMappedValue(
+      getDentwebRowValue(row, ["sz휴대폰번호", "sz전화번호", "전화번호", "sz전화", "phone"]),
+    ),
+    detail: normalizeMappedValue(getDentwebRowValue(row, ["접수내용", "sz접수내용", "reservationDetail", "detail"])),
+  };
+}
+
+async function buildDentwebTodayReceptionPayload(config, input = {}) {
+  const date = normalizeDentwebReceptionDate(input.date);
+
+  return withDentwebSqlServer(config, async ({ sql, pool }) => {
+    const [receptionResult, staffResult, chairResult] = await Promise.all([
+      pool.request().input("sz날짜", sql.VarChar(8), date).execute("dbo.PUB_P접수목록"),
+      pool.request().query(`
+        SELECT [nID] AS [id], [sz이름] AS [name]
+        FROM [dbo].[PUB_V직원정보]
+        WHERE ISNULL([sz퇴사일], '') = '';
+      `),
+      pool.request().query(`
+        SELECT [nID] AS [id], [sz이름] AS [name]
+        FROM [dbo].[TB_체어목록]
+        ORDER BY [n순서] ASC;
+      `),
+    ]);
+    const staffNames = new Map(
+      staffResult.recordset.map((staff) => [normalizeMappedValue(staff.id), normalizeMappedValue(staff.name)]),
+    );
+    const chairNames = new Map(
+      chairResult.recordset.map((chair) => [normalizeMappedValue(chair.id), normalizeMappedValue(chair.name)]),
+    );
+    const patients = receptionResult.recordset.map((row, index) =>
+      mapDentwebReceptionRow(row, index, staffNames, chairNames, date),
+    );
+
+    return {
+      ok: true,
+      readOnly: true,
+      clinicId: config.clinicId,
+      date,
+      patients,
+      counts: patients.reduce((counts, patient) => {
+        counts[patient.statusCode] = (counts[patient.statusCode] || 0) + 1;
+        return counts;
+      }, {}),
+      checkedAt: new Date().toISOString(),
+    };
+  });
+}
+
 async function testDentwebSqlServerConnection(config) {
   return withDentwebSqlServer(config, async ({ pool }) => {
     await pool.request().query(`
@@ -4297,6 +4473,7 @@ function buildHealthPayload(config, startedAt) {
       "/dentweb/sync-now",
       "/dentweb/patients/search",
       "/dentweb/patients/appointments",
+      "/dentweb/receptions/today",
       "/local-db/status",
       "/local-db/schema",
       "/local-db/dry-run-sync",
@@ -4626,6 +4803,26 @@ async function handleDentwebPatientAppointments(request, response, requestUrl, c
   sendJson(response, payload.ok ? 200 : 500, payload);
 }
 
+async function handleDentwebTodayReception(request, response, requestUrl, config) {
+  const body = request.method === "POST" ? await readJsonBody(request) : {};
+
+  try {
+    const payload = await buildDentwebTodayReceptionPayload(config, {
+      ...body,
+      date: body.date ?? requestUrl.searchParams.get("date"),
+    });
+
+    sendJson(response, 200, payload);
+  } catch {
+    sendJson(response, 500, {
+      ok: false,
+      error: "dentweb_reception_unavailable",
+      message: "Dentweb reception list could not be loaded.",
+      checkedAt: new Date().toISOString(),
+    });
+  }
+}
+
 function handleLocalDbStatus(response, config) {
   const payload = buildLocalDbStatusPayload(config);
 
@@ -4777,6 +4974,18 @@ function createServer(config, startedAt) {
         requestUrl.pathname === "/dentweb/patients/appointments"
       ) {
         await handleDentwebPatientAppointments(request, response, requestUrl, config);
+        return;
+      }
+
+      if (
+        (request.method === "GET" || request.method === "POST") &&
+        requestUrl.pathname === "/dentweb/receptions/today"
+      ) {
+        if (!authorizeAppDataRequest(request, response)) {
+          return;
+        }
+
+        await handleDentwebTodayReception(request, response, requestUrl, config);
         return;
       }
 
