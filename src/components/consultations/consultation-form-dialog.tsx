@@ -536,7 +536,7 @@ export function ConsultationFormDialog({
     try {
       const payload = await searchDentwebPatients({
         clinicId: activeClinic.id,
-        limit: 6,
+        limit: 30,
         query,
       });
       const patients = payload.patients ?? [];
@@ -831,7 +831,7 @@ export function ConsultationFormDialog({
                 </label>
               );
             })}
-            {patientSearchState.status !== "idle" && !isPatientSearchDropdownOpen ? (
+            {selectedDentwebPatient ? (
               <div className="md:col-span-2 xl:col-span-4">
                 <div
                   className={[

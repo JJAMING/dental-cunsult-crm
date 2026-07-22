@@ -765,9 +765,8 @@ async function loadDentwebSqlServerReadOnlyAdapter(config) {
   return withDentwebSqlServer(config, async ({ sql, pool }) => {
     const patientResult = await pool
       .request()
-      .input("limit", sql.Int, 5000)
       .query(`
-        SELECT TOP (@limit)
+        SELECT
           patient.[n환자ID] AS [sourceId],
           patient.[sz차트번호] AS [chartNo],
           patient.[sz이름] AS [patientName],
