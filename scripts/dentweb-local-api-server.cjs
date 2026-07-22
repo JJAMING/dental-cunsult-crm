@@ -5,7 +5,11 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 
-const runtimeDir = path.join(process.cwd(), ".dentweb-local");
+// Packaged desktop installs pass a per-user runtime directory. Keeping this
+// outside the install folder prevents updates from overwriting clinic data.
+const runtimeDir = process.env.DENTAL_CONSULT_RUNTIME_DIR
+  ? path.resolve(process.env.DENTAL_CONSULT_RUNTIME_DIR)
+  : path.join(process.cwd(), ".dentweb-local");
 const configPath = path.join(runtimeDir, "server-config.json");
 const clientsPath = path.join(runtimeDir, "clients.json");
 const localDbPath = path.join(runtimeDir, "local.db");
@@ -511,8 +515,6 @@ function getLocalDbMeta(db, key) {
 }
 
 function ensureLocalDbSchema(db, config) {
-  const previousSchemaVersion = Number(getLocalDbMeta(db, "schema_version") ?? 0);
-
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
 
@@ -523,6 +525,10 @@ function ensureLocalDbSchema(db, config) {
   localDbIndexDefinitions.forEach((createSql) => {
     db.exec(createSql);
   });
+
+  // A brand-new server has no schema_meta table until the definitions above
+  // are applied, so the version can only be read after this point.
+  const previousSchemaVersion = Number(getLocalDbMeta(db, "schema_version") ?? 0);
 
   const now = new Date().toISOString();
 

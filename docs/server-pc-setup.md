@@ -2,6 +2,18 @@
 
 Run this only on the Windows PC that has Dentweb installed or has the authorized Dentweb database connection.
 
+## Installed desktop app (recommended)
+
+The packaged desktop app includes the local server agent, so the server PC does not need a separate project folder or Node.js installation.
+
+1. Install `Dental Consult CRM Setup.exe` on the Dentweb server PC.
+2. Open PowerShell as Administrator and run the bundled `setup-dentweb-server.ps1` script from the installed app's `resources\\agent` folder.
+3. Enter the clinic ID, clinic name, and the Supabase service-role key when prompted.
+4. The script stores server-only settings under `%APPDATA%\\Dental Consult CRM\\agent`, creates a logon task, and adds the Private-LAN firewall rule for port `34254`.
+5. Open the desktop app, select server mode, then run Dentweb discovery and the read-only connection test.
+
+The scheduled task runs the installed app with `--agent`; it does not show a browser window. Client PCs use their own desktop app and connect to this server's LAN address.
+
 ## Before setup
 
 1. Install Node.js 24 or later.
@@ -51,5 +63,5 @@ The Desktop Client keeps Node.js disabled in the page itself. It passes only app
 
 - Use only a Private Windows network profile.
 - The setup script limits the firewall rule to the local subnet.
-- The service role key is stored only in `.dentweb-local/server-secrets.env`, which is ignored by Git.
+- The service role key is stored only in the server runtime's `server-secrets.env` file: `%APPDATA%\\Dental Consult CRM\\agent` for an installed app, or `.dentweb-local` for source-project setup. Both paths are excluded from Git.
 - Rotate the Supabase service role key if it was shared outside a secure administrator channel.

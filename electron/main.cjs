@@ -1,10 +1,17 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const { app, BrowserWindow, ipcMain, session } = require("electron");
+const childProcess = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
+
+app.setName("Dental Consult CRM");
 
 const defaultAppUrl = "https://dental-cunsult-crm.vercel.app";
 const appUrl = process.env.DENTAL_CONSULT_APP_URL || defaultAppUrl;
 const localApiPort = Number(process.env.DENTAL_CONSULT_LOCAL_API_PORT || 34254);
+const isServerAgentMode = process.argv.includes("--agent");
+let serverAgentProcess;
+let serverAgentHeartbeat;
 
 function getAppOrigin() {
   return new URL(appUrl).origin;
@@ -84,7 +91,62 @@ function createMainWindow() {
   void window.loadURL(appUrl);
 }
 
+function getBundledAgentPath() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "agent", "dentweb-local-api-server.cjs");
+  }
+
+  return path.join(__dirname, "..", "scripts", "dentweb-local-api-server.cjs");
+}
+
+function getAgentRuntimeDirectory() {
+  return path.join(app.getPath("userData"), "agent");
+}
+
+function startBundledServerAgent() {
+  const agentPath = getBundledAgentPath();
+
+  if (!fs.existsSync(agentPath)) {
+    throw new Error(`Bundled local API agent was not found: ${agentPath}`);
+  }
+
+  fs.mkdirSync(getAgentRuntimeDirectory(), { recursive: true });
+  serverAgentProcess = childProcess.spawn(process.execPath, [agentPath], {
+    detached: false,
+    stdio: "ignore",
+    windowsHide: true,
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+      DENTAL_CONSULT_RUNTIME_DIR: getAgentRuntimeDirectory(),
+    },
+  });
+
+  serverAgentProcess.on("error", (error) => {
+    console.error("Could not start the Dental Consult server agent.", error);
+  });
+
+  // A scheduled task runs this hidden parent process. The timer keeps it
+  // alive while its child owns the local HTTP API.
+  serverAgentHeartbeat = setInterval(() => {}, 60_000);
+}
+
+function stopBundledServerAgent() {
+  if (serverAgentHeartbeat) {
+    clearInterval(serverAgentHeartbeat);
+  }
+
+  if (serverAgentProcess && !serverAgentProcess.killed) {
+    serverAgentProcess.kill();
+  }
+}
+
 app.whenReady().then(() => {
+  if (isServerAgentMode) {
+    startBundledServerAgent();
+    return;
+  }
+
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
 
   ipcMain.handle("dental-consult:local-api-request", async (event, request) => {
@@ -123,7 +185,9 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
+  if (!isServerAgentMode && process.platform !== "darwin") {
     app.quit();
   }
 });
+
+app.on("before-quit", stopBundledServerAgent);
