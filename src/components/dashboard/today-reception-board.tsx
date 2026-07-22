@@ -99,15 +99,17 @@ function ReceptionTable({
   patients,
   onSelect,
   onConsult,
+  scrollable = false,
 }: {
   patients: DentwebReceptionPatient[];
   onSelect: (patient: DentwebReceptionPatient) => void;
   onConsult: (patient: DentwebReceptionPatient) => void;
+  scrollable?: boolean;
 }) {
   return (
-    <div className="overflow-x-auto">
+    <div className={scrollable ? "max-h-[680px] overflow-auto" : "overflow-x-auto"}>
       <table className="crm-table min-w-[980px]">
-        <thead>
+        <thead className={scrollable ? "sticky top-0 z-10 shadow-[0_1px_0_rgba(6,43,100,0.16)]" : undefined}>
           <tr>
             <th>순번</th>
             <th>상태</th>
@@ -335,7 +337,6 @@ export function TodayReceptionBoard({
     () => (statusFilter === "all" ? patients : patients.filter((patient) => patient.statusCode === statusFilter)),
     [patients, statusFilter],
   );
-  const visiblePatients = filteredPatients.slice(0, 8);
   const refreshReception = () => {
     setIsLoading(true);
     setMessage("");
@@ -410,21 +411,16 @@ export function TodayReceptionBoard({
         <div className="px-5 py-10 text-center text-sm font-bold text-slate">오늘의 접수 목록을 불러오는 중입니다.</div>
       ) : message ? (
         <div className="px-5 py-10 text-center text-sm font-bold text-[#b94b10]">{message}</div>
-      ) : visiblePatients.length ? (
+      ) : filteredPatients.length ? (
         <ReceptionTable
-          patients={visiblePatients}
+          patients={filteredPatients}
           onSelect={setSelectedPatient}
           onConsult={openConsultation}
+          scrollable
         />
       ) : (
         <div className="px-5 py-10 text-center text-sm font-bold text-slate">선택한 상태의 접수 환자가 없습니다.</div>
       )}
-
-      {!isLoading && !message && filteredPatients.length > visiblePatients.length ? (
-        <footer className="border-t border-mist px-5 py-3 text-sm font-bold text-slate">
-          {filteredPatients.length}명 중 {visiblePatients.length}명 표시 중입니다. 전체 보기를 눌러 모든 환자를 확인하세요.
-        </footer>
-      ) : null}
 
       {isAllListOpen ? (
         <ReceptionListDialog
