@@ -255,6 +255,18 @@ function formatDentwebGender(value?: string) {
   return "-";
 }
 
+function getDentwebGenderClass(value?: string) {
+  if (value === "female" || value === "true" || value === "1") {
+    return "font-bold text-[#d95b89]";
+  }
+
+  if (value === "male" || value === "false" || value === "0") {
+    return "font-bold text-[#3b72d9]";
+  }
+
+  return "font-bold text-slate";
+}
+
 function formatDentwebPhone(value?: string) {
   const digits = String(value ?? "").replace(/\D/g, "");
 
@@ -305,7 +317,9 @@ function DentwebPatientSearchDropdown({
                   <span className="text-sm font-bold text-monday-violet">차트 {patient.chartNo || "-"}</span>
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate">
-                  <span>성별 {formatDentwebGender(patient.gender)}</span>
+                  <span>
+                    성별 <strong className={getDentwebGenderClass(patient.gender)}>{formatDentwebGender(patient.gender)}</strong>
+                  </span>
                   <span>생년월일 {formatDentwebBirthDate(patient.birthDate)}</span>
                   <span>만 나이 {getDentwebAge(patient.birthDate)}</span>
                   <span>전화번호 {formatDentwebPhone(patient.phone)}</span>

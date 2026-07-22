@@ -2658,10 +2658,12 @@ function buildDentwebPatientSearchPayload(config, input = {}) {
   const where = ["clinic_id = ?"];
 
   if (query) {
-    const likeQuery = `%${escapeSqliteLikePattern(query)}%`;
+    const escapedQuery = escapeSqliteLikePattern(query);
+    const namePrefixQuery = `${escapedQuery}%`;
+    const chartLikeQuery = `%${escapedQuery}%`;
 
     where.push("(patient_name LIKE ? ESCAPE '\\' OR chart_no LIKE ? ESCAPE '\\')");
-    params.push(likeQuery, likeQuery);
+    params.push(namePrefixQuery, chartLikeQuery);
   }
 
   const rows = db
@@ -2671,13 +2673,19 @@ function buildDentwebPatientSearchPayload(config, input = {}) {
         FROM dentweb_patients_snapshot
         WHERE ${where.join(" AND ")}
         ORDER BY
-          CASE WHEN patient_name = ? THEN 0 WHEN chart_no = ? THEN 1 ELSE 2 END,
+          CASE
+            WHEN patient_name = ? THEN 0
+            WHEN patient_name LIKE ? ESCAPE '\\' THEN 1
+            WHEN chart_no = ? THEN 2
+            WHEN chart_no LIKE ? ESCAPE '\\' THEN 3
+            ELSE 4
+          END,
           synced_at DESC,
           patient_name ASC
         LIMIT ?
       `,
     )
-    .all(...params, query, query, limit);
+    .all(...params, query, `${escapeSqliteLikePattern(query)}%`, query, `%${escapeSqliteLikePattern(query)}%`, limit);
 
   const patients = rows.map((row) => mapDentwebPatientSnapshotRow(db, clinicId, row));
 
