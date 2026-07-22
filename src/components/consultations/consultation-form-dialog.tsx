@@ -172,10 +172,41 @@ function formatDentwebAppointment(appointment?: DentwebSnapshotAppointment | nul
     return "";
   }
 
+  const dateDigits = String(appointment.appointmentDate ?? "").replace(/\D/g, "");
+  const timeDigits = String(appointment.appointmentTime ?? "").replace(/\D/g, "");
+  const dateText = (() => {
+    if (dateDigits.length !== 8) {
+      return appointment.appointmentDate || "";
+    }
+
+    const year = Number(dateDigits.slice(0, 4));
+    const month = Number(dateDigits.slice(4, 6));
+    const day = Number(dateDigits.slice(6, 8));
+    const date = new Date(year, month - 1, day);
+    const weekday = ["일", "월", "화", "수", "목", "금", "토"][date.getDay()];
+
+    return Number.isNaN(date.getTime())
+      ? appointment.appointmentDate || ""
+      : `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}(${weekday})`;
+  })();
+  const timeText = (() => {
+    if (!timeDigits) {
+      return "";
+    }
+
+    const normalized = timeDigits.padStart(4, "0").slice(-4);
+    const hour = Number(normalized.slice(0, 2));
+    const minute = Number(normalized.slice(2, 4));
+
+    return hour <= 23 && minute <= 59
+      ? `${hour}시 ${String(minute).padStart(2, "0")}분`
+      : appointment.appointmentTime || "";
+  })();
+
   return [
-    appointment.appointmentDate,
-    appointment.appointmentTime,
-    appointment.doctor ? `담당 ${appointment.doctor}` : "",
+    dateText,
+    timeText,
+    appointment.doctor ? `Dr. ${appointment.doctor}` : "",
     appointment.status,
   ]
     .filter(Boolean)
@@ -274,7 +305,6 @@ function DentwebPatientSearchDropdown({
                   <span className="text-sm font-bold text-monday-violet">차트 {patient.chartNo || "-"}</span>
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate">
-                  <span>내원경로 {patient.visitChannel || "-"}</span>
                   <span>성별 {formatDentwebGender(patient.gender)}</span>
                   <span>생년월일 {formatDentwebBirthDate(patient.birthDate)}</span>
                   <span>만 나이 {getDentwebAge(patient.birthDate)}</span>
@@ -438,6 +468,7 @@ export function ConsultationFormDialog({
     status: "idle",
   });
   const [isPatientSearchDropdownOpen, setIsPatientSearchDropdownOpen] = useState(false);
+  const patientSearchDropdownRef = useRef<HTMLLabelElement | null>(null);
   const [appointmentLookupState, setAppointmentLookupState] = useState<AppointmentLookupState>({
     appointments: [],
     message: "",
@@ -613,6 +644,11 @@ export function ConsultationFormDialog({
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (isPatientSearchDropdownOpen) {
+          setIsPatientSearchDropdownOpen(false);
+          return;
+        }
+
         onClose();
       }
     };
@@ -624,7 +660,27 @@ export function ConsultationFormDialog({
       document.body.style.overflow = "";
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [onClose]);
+  }, [isPatientSearchDropdownOpen, onClose]);
+
+  useEffect(() => {
+    if (!isPatientSearchDropdownOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (patientSearchDropdownRef.current?.contains(event.target as Node)) {
+        return;
+      }
+
+      setIsPatientSearchDropdownOpen(false);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [isPatientSearchDropdownOpen]);
 
   useEffect(() => {
     const query = (formState.patientName.trim() || formState.chartNo.trim()).trim();
@@ -722,6 +778,7 @@ export function ConsultationFormDialog({
               return (
                 <label
                   key={field.name}
+                  ref={field.name === "patientName" ? patientSearchDropdownRef : undefined}
                   className={field.name === "patientName" ? "relative space-y-2" : "space-y-2"}
                 >
                   <span className="text-xs font-bold text-slate">{field.label}</span>
