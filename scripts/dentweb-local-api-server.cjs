@@ -9,7 +9,8 @@ const runtimeDir = path.join(process.cwd(), ".dentweb-local");
 const configPath = path.join(runtimeDir, "server-config.json");
 const clientsPath = path.join(runtimeDir, "clients.json");
 const localDbPath = path.join(runtimeDir, "local.db");
-const localDbSchemaVersion = 1;
+const serverSecretsPath = path.join(runtimeDir, "server-secrets.env");
+const localDbSchemaVersion = 2;
 const validClientStatuses = new Set(["pending_approval", "approved", "rejected"]);
 const dentwebProcessKeywords = ["dentweb", "dent", "dental"];
 const dentwebDbFileNames = [
@@ -201,6 +202,25 @@ const localDbTableDefinitions = [
       )
     `,
   },
+  {
+    name: "supabase_sync_jobs",
+    purpose: "Reliable Supabase synchronization queue",
+    createSql: `
+      CREATE TABLE IF NOT EXISTS supabase_sync_jobs (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id INTEGER NOT NULL,
+        clinic_id TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (entity_type, entity_id, clinic_id)
+      )
+    `,
+  },
 ];
 
 const localDbIndexDefinitions = [
@@ -212,10 +232,42 @@ const localDbIndexDefinitions = [
    ON dentweb_appointments_snapshot (clinic_id, chart_no, appointment_date)`,
   `CREATE INDEX IF NOT EXISTS idx_dentweb_appointments_clinic_name_date
    ON dentweb_appointments_snapshot (clinic_id, patient_name, appointment_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_supabase_sync_jobs_created
+   ON supabase_sync_jobs (created_at)`,
 ];
 
 let sqliteModule;
 let localDb;
+let supabaseSyncInProgress = false;
+let supabaseSyncTimer;
+
+function loadServerSecrets() {
+  if (!fs.existsSync(serverSecretsPath)) {
+    return;
+  }
+
+  try {
+    const lines = fs.readFileSync(serverSecretsPath, "utf8").split(/\r?\n/);
+
+    lines.forEach((line) => {
+      const matched = line.match(/^\s*(DENTAL_CONSULT_SUPABASE_(?:URL|SERVICE_ROLE_KEY))\s*=\s*(.*)\s*$/);
+
+      if (!matched || process.env[matched[1]]) {
+        return;
+      }
+
+      const value = matched[2].replace(/^(["'])(.*)\1$/, "$2").trim();
+
+      if (value) {
+        process.env[matched[1]] = value;
+      }
+    });
+  } catch {
+    // Keep the local API available even when the optional server secrets file is unreadable.
+  }
+}
+
+loadServerSecrets();
 
 function getCommonDentwebPaths() {
   const programFiles = process.env.ProgramFiles;
@@ -452,7 +504,15 @@ function setLocalDbMeta(db, key, value) {
   `).run(key, String(value), new Date().toISOString());
 }
 
+function getLocalDbMeta(db, key) {
+  const row = db.prepare("SELECT value FROM schema_meta WHERE key = ?").get(key);
+
+  return row?.value ?? null;
+}
+
 function ensureLocalDbSchema(db, config) {
+  const previousSchemaVersion = Number(getLocalDbMeta(db, "schema_version") ?? 0);
+
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
 
@@ -477,6 +537,10 @@ function ensureLocalDbSchema(db, config) {
       name = excluded.name,
       updated_at = excluded.updated_at
   `).run(config.clinicId, config.clinicName, now, now);
+
+  if (previousSchemaVersion < localDbSchemaVersion) {
+    queueExistingConsultationBackfill(db);
+  }
 }
 
 function getLocalDb(config) {
@@ -2953,6 +3017,8 @@ function rowToConsultation(row) {
     result: row.result || "declined",
     consultationAmount: Number(row.consultation_amount ?? 0),
     agreedAmount: Number(row.agreed_amount ?? 0),
+    partialAgreement: Boolean(row.partial_agreement),
+    agreementCancelled: Boolean(row.agreement_cancelled),
     disagreementReason: row.disagreement_reason || undefined,
     memo: row.memo || undefined,
   };
@@ -2994,6 +3060,364 @@ function normalizeConsultationInput(input, config, fallback = {}) {
     disagreementReason: toText(input.disagreementReason, fallback.disagreementReason || ""),
     memo: toText(input.memo, fallback.memo || ""),
   };
+}
+
+function getSupabaseServerConfig() {
+  const url = String(process.env.DENTAL_CONSULT_SUPABASE_URL || "").trim().replace(/\/$/, "");
+  const serviceRoleKey = String(process.env.DENTAL_CONSULT_SUPABASE_SERVICE_ROLE_KEY || "").trim();
+
+  return {
+    url,
+    serviceRoleKey,
+    configured: Boolean(url && serviceRoleKey),
+  };
+}
+
+async function supabaseRequest(supabase, route, options = {}) {
+  const response = await fetch(`${supabase.url}${route}`, {
+    method: options.method || "GET",
+    headers: {
+      apikey: supabase.serviceRoleKey,
+      authorization: `Bearer ${supabase.serviceRoleKey}`,
+      ...(options.headers || {}),
+    },
+    body: options.body,
+  });
+  const rawBody = await response.text();
+  let data = null;
+
+  if (rawBody) {
+    try {
+      data = JSON.parse(rawBody);
+    } catch {
+      data = rawBody;
+    }
+  }
+
+  if (!response.ok) {
+    const message =
+      typeof data === "object" && data
+        ? data.message || data.error || data.hint || JSON.stringify(data)
+        : rawBody || `Supabase request failed with status ${response.status}.`;
+
+    throw new Error(String(message).slice(0, 600));
+  }
+
+  return data;
+}
+
+function supabaseRestRoute(tableName, parameters = {}) {
+  const query = new URLSearchParams(
+    Object.entries(parameters).reduce((nextParameters, [key, value]) => {
+      if (value !== undefined && value !== null && value !== "") {
+        nextParameters[key] = String(value);
+      }
+
+      return nextParameters;
+    }, {}),
+  );
+  const suffix = query.toString();
+
+  return `/rest/v1/${tableName}${suffix ? `?${suffix}` : ""}`;
+}
+
+async function upsertSupabaseRow(supabase, tableName, conflictColumns, row) {
+  const data = await supabaseRequest(
+    supabase,
+    supabaseRestRoute(tableName, { on_conflict: conflictColumns }),
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        prefer: "resolution=merge-duplicates,return=representation",
+      },
+      body: JSON.stringify([row]),
+    },
+  );
+
+  const storedRow = Array.isArray(data) ? data[0] : null;
+
+  if (!storedRow?.id) {
+    throw new Error(`${tableName} did not return a stored row.`);
+  }
+
+  return storedRow;
+}
+
+async function getOrCreateSupabaseClinic(supabase, consultation) {
+  const clinicKey = consultation.clinicId;
+  const clinics = await supabaseRequest(
+    supabase,
+    supabaseRestRoute("clinics", {
+      app_clinic_key: `eq.${clinicKey}`,
+      select: "id,name",
+      limit: 1,
+    }),
+  );
+
+  if (Array.isArray(clinics) && clinics[0]?.id) {
+    return clinics[0];
+  }
+
+  return upsertSupabaseRow(supabase, "clinics", "app_clinic_key", {
+    app_clinic_key: clinicKey,
+    name: consultation.clinicName || "Dental Consult Clinic",
+  });
+}
+
+async function getSupabaseLookupId(supabase, tableName, conflictColumns, row) {
+  if (!row?.name) {
+    return null;
+  }
+
+  const storedRow = await upsertSupabaseRow(supabase, tableName, conflictColumns, row);
+
+  return storedRow.id;
+}
+
+function normalizeSupabaseConsultationResult(result) {
+  return ["same_day", "follow_up", "declined", "cancelled"].includes(result)
+    ? result
+    : "declined";
+}
+
+async function syncConsultationToSupabase(supabase, operation, consultation) {
+  const clinic = await getOrCreateSupabaseClinic(supabase, consultation);
+
+  if (operation === "delete") {
+    await supabaseRequest(
+      supabase,
+      supabaseRestRoute("consultations", {
+        clinic_id: `eq.${clinic.id}`,
+        app_row_id: `eq.${consultation.id}`,
+      }),
+      {
+        method: "DELETE",
+        headers: { prefer: "return=minimal" },
+      },
+    );
+    return;
+  }
+
+  const chartNo = consultation.chartNo || `local-${consultation.id}`;
+  const patient = await upsertSupabaseRow(supabase, "patients", "clinic_id,chart_no", {
+    clinic_id: clinic.id,
+    name: consultation.patientName || "Unnamed patient",
+    chart_no: chartNo,
+    patient_type: consultation.patientType === "returning" ? "returning" : "new",
+  });
+  const counselorId = await getSupabaseLookupId(supabase, "staff", "clinic_id,name,staff_type", {
+    clinic_id: clinic.id,
+    name: consultation.counselor,
+    staff_type: "counselor",
+    is_active: true,
+  });
+  const doctorId = await getSupabaseLookupId(supabase, "staff", "clinic_id,name,staff_type", {
+    clinic_id: clinic.id,
+    name: consultation.doctor,
+    staff_type: "doctor",
+    is_active: true,
+  });
+  const visitChannelId = await getSupabaseLookupId(supabase, "visit_channels", "clinic_id,name", {
+    clinic_id: clinic.id,
+    name: consultation.visitChannel,
+    is_active: true,
+  });
+  const treatmentCategoryId = await getSupabaseLookupId(
+    supabase,
+    "treatment_categories",
+    "clinic_id,name",
+    {
+      clinic_id: clinic.id,
+      name: consultation.treatmentCategory,
+      is_active: true,
+    },
+  );
+  const disagreementReasonId = await getSupabaseLookupId(
+    supabase,
+    "disagreement_reasons",
+    "clinic_id,name",
+    {
+      clinic_id: clinic.id,
+      name: consultation.disagreementReason,
+      is_active: true,
+    },
+  );
+  const payload = {
+    clinic_id: clinic.id,
+    app_row_id: consultation.id,
+    patient_id: patient.id,
+    consultation_date: consultation.date,
+    counselor_id: counselorId,
+    doctor_id: doctorId,
+    visit_channel_id: visitChannelId,
+    treatment_category_id: treatmentCategoryId,
+    consulted_teeth_count: consultation.consultedTeeth,
+    agreed_teeth_count: consultation.agreedTeeth,
+    result: normalizeSupabaseConsultationResult(consultation.result),
+    is_partial_treatment: Boolean(consultation.partialAgreement),
+    is_cancelled_after_agreement: Boolean(consultation.agreementCancelled),
+    consultation_amount: consultation.consultationAmount,
+    agreed_amount: consultation.agreedAmount,
+    disagreement_reason_id: disagreementReasonId,
+    memo: consultation.memo || null,
+  };
+  const storedConsultations = await supabaseRequest(
+    supabase,
+    supabaseRestRoute("consultations", {
+      clinic_id: `eq.${clinic.id}`,
+      app_row_id: `eq.${consultation.id}`,
+      select: "id",
+      limit: 1,
+    }),
+  );
+
+  if (Array.isArray(storedConsultations) && storedConsultations[0]?.id) {
+    await supabaseRequest(
+      supabase,
+      supabaseRestRoute("consultations", { id: `eq.${storedConsultations[0].id}` }),
+      {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          prefer: "return=minimal",
+        },
+        body: JSON.stringify(payload),
+      },
+    );
+    return;
+  }
+
+  await supabaseRequest(supabase, supabaseRestRoute("consultations"), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      prefer: "return=minimal",
+    },
+    body: JSON.stringify([payload]),
+  });
+}
+
+function queueSupabaseConsultationSync(db, operation, consultation) {
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO supabase_sync_jobs (
+      id, entity_type, entity_id, clinic_id, operation, payload_json,
+      attempt_count, last_error, created_at, updated_at
+    )
+    VALUES (?, 'consultation', ?, ?, ?, ?, 0, NULL, ?, ?)
+    ON CONFLICT(entity_type, entity_id, clinic_id) DO UPDATE SET
+      operation = excluded.operation,
+      payload_json = excluded.payload_json,
+      attempt_count = 0,
+      last_error = NULL,
+      updated_at = excluded.updated_at
+  `).run(
+    crypto.randomUUID(),
+    consultation.id,
+    consultation.clinicId,
+    operation,
+    JSON.stringify(consultation),
+    now,
+    now,
+  );
+}
+
+function queueExistingConsultationBackfill(db) {
+  const rows = db.prepare("SELECT * FROM consultations ORDER BY id ASC").all();
+
+  rows.forEach((row) => {
+    queueSupabaseConsultationSync(db, "upsert", rowToConsultation(row));
+  });
+}
+
+function getSupabaseSyncStatus(config) {
+  const { db } = getLocalDb(config);
+  const supabase = getSupabaseServerConfig();
+
+  if (!db) {
+    return { ok: false, configured: supabase.configured, pendingJobs: 0 };
+  }
+
+  const pending = db.prepare("SELECT COUNT(*) AS count FROM supabase_sync_jobs").get();
+  const latestFailure = db.prepare(`
+    SELECT last_error, updated_at
+    FROM supabase_sync_jobs
+    WHERE last_error IS NOT NULL
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).get();
+
+  return {
+    ok: true,
+    configured: supabase.configured,
+    pendingJobs: Number(pending?.count ?? 0),
+    syncing: supabaseSyncInProgress,
+    lastError: latestFailure?.last_error || null,
+    lastErrorAt: latestFailure?.updated_at || null,
+  };
+}
+
+async function syncPendingSupabaseJobs(config, limit = 20) {
+  const { db, error } = getLocalDb(config);
+  const supabase = getSupabaseServerConfig();
+
+  if (!db) {
+    return { ok: false, error };
+  }
+
+  if (!supabase.configured) {
+    return { ok: false, error: "supabase_server_credentials_not_configured" };
+  }
+
+  if (supabaseSyncInProgress) {
+    return { ok: true, syncing: true, synced: 0, failed: 0 };
+  }
+
+  supabaseSyncInProgress = true;
+  let synced = 0;
+  let failed = 0;
+
+  try {
+    const jobs = db.prepare(`
+      SELECT *
+      FROM supabase_sync_jobs
+      ORDER BY created_at ASC
+      LIMIT ?
+    `).all(limit);
+
+    for (const job of jobs) {
+      try {
+        const consultation = JSON.parse(job.payload_json);
+
+        await syncConsultationToSupabase(supabase, job.operation, consultation);
+        db.prepare("DELETE FROM supabase_sync_jobs WHERE id = ?").run(job.id);
+        synced += 1;
+      } catch (syncError) {
+        const message = syncError instanceof Error ? syncError.message : "supabase_sync_failed";
+
+        db.prepare(`
+          UPDATE supabase_sync_jobs
+          SET attempt_count = attempt_count + 1,
+              last_error = ?,
+              updated_at = ?
+          WHERE id = ?
+        `).run(message.slice(0, 600), new Date().toISOString(), job.id);
+        failed += 1;
+      }
+    }
+  } finally {
+    supabaseSyncInProgress = false;
+  }
+
+  return { ok: failed === 0, synced, failed };
+}
+
+async function queueAndSyncConsultation(db, config, operation, consultation) {
+  queueSupabaseConsultationSync(db, operation, consultation);
+
+  return syncPendingSupabaseJobs(config, 20);
 }
 
 function insertConsultation(db, consultation) {
@@ -3146,10 +3570,12 @@ async function handleConsultationCreate(request, response, config) {
   );
 
   insertConsultation(db, consultation);
+  const sync = await queueAndSyncConsultation(db, config, "upsert", consultation);
 
   sendJson(response, 201, {
     ok: true,
     consultation,
+    sync,
   });
 }
 
@@ -3176,14 +3602,16 @@ async function handleConsultationUpdate(request, response, config, consultationI
   const consultation = normalizeConsultationInput({ ...body, id: consultationId }, config, currentConsultation);
 
   updateConsultationRow(db, consultation);
+  const sync = await queueAndSyncConsultation(db, config, "upsert", consultation);
 
   sendJson(response, 200, {
     ok: true,
     consultation,
+    sync,
   });
 }
 
-function handleConsultationDelete(response, config, consultationId) {
+async function handleConsultationDelete(response, config, consultationId) {
   const { db, error } = getLocalDb(config);
 
   if (!db) {
@@ -3209,10 +3637,12 @@ function handleConsultationDelete(response, config, consultationId) {
     clinicId,
   );
   db.prepare("DELETE FROM consultations WHERE id = ?").run(consultationId);
+  const sync = await queueAndSyncConsultation(db, config, "delete", currentConsultation);
 
   sendJson(response, 200, {
     ok: true,
     consultation: currentConsultation,
+    sync,
   });
 }
 
@@ -3421,6 +3851,7 @@ function buildHealthPayload(config, startedAt) {
       "/local-db/status",
       "/local-db/schema",
       "/local-db/dry-run-sync",
+      "/supabase-sync/status",
       "/app-data/consultations",
       "/app-data/consultations/:id",
       "/app-data/recall-records",
@@ -3498,6 +3929,12 @@ async function handleClientRegister(request, response, config) {
         ? "???? ?????????????????源낆┸???饔낅떽???????곗뒧?????????곸죩. ???轅붽틓??????壤???????⑤벡瑜?????傭?끆???????????????????????????곸죩."
         : "Client registration request was received. Approval is pending on the server PC.",
   });
+}
+
+function handleSupabaseSyncStatus(response, config) {
+  const payload = getSupabaseSyncStatus(config);
+
+  sendJson(response, payload.ok ? 200 : 500, payload);
 }
 
 function handleClientsList(response) {
@@ -3840,6 +4277,11 @@ function createServer(config, startedAt) {
         return;
       }
 
+      if (request.method === "GET" && requestUrl.pathname === "/supabase-sync/status") {
+        handleSupabaseSyncStatus(response, config);
+        return;
+      }
+
       if (requestUrl.pathname.startsWith("/app-data/") && !authorizeAppDataRequest(request, response)) {
         return;
       }
@@ -3862,7 +4304,7 @@ function createServer(config, startedAt) {
       }
 
       if (request.method === "DELETE" && consultationMatch) {
-        handleConsultationDelete(response, config, Number(consultationMatch[1]));
+        await handleConsultationDelete(response, config, Number(consultationMatch[1]));
         return;
       }
 
@@ -3940,12 +4382,24 @@ server.listen(config.port, config.host, () => {
   lanAddresses.forEach((address) => {
     console.log(`LAN:    http://${address}:${config.port}`);
   });
+
+  void syncPendingSupabaseJobs(config, 100).then((result) => {
+    if (result.synced || result.failed) {
+      console.log(`Supabase sync: ${result.synced || 0} synced, ${result.failed || 0} pending retry.`);
+    }
+  });
+
+  supabaseSyncTimer = setInterval(() => {
+    void syncPendingSupabaseJobs(config, 100);
+  }, 60_000);
 });
 
 process.on("SIGINT", () => {
+  clearInterval(supabaseSyncTimer);
   server.close(() => process.exit(0));
 });
 
 process.on("SIGTERM", () => {
+  clearInterval(supabaseSyncTimer);
   server.close(() => process.exit(0));
 });

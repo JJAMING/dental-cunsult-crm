@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   adminSettingsChangedEvent,
 } from "@/lib/admin-settings";
@@ -21,7 +21,6 @@ import type { Consultation, ConsultationResult, PatientType } from "@/types/doma
 
 const consultationStorageKey = "dental-consult-consultations-v1";
 const deletedConsultationIdsStorageKey = "dental-consult-deleted-consultation-ids-v1";
-const pendingSupabaseSyncStorageKey = "dental-consult-pending-supabase-sync-v1";
 const consultationStorageChangedEvent = "dental-consult-consultations-changed";
 
 type ConsultationInput = Omit<Consultation, "id">;
@@ -34,19 +33,6 @@ type ConsultationsApiResponse = {
 type ConsultationMutationApiResponse = {
   consultation?: unknown;
 };
-type PendingSupabaseSync =
-  | {
-      kind: "upsert";
-      consultationId: number;
-      input: ConsultationInput;
-    }
-  | {
-      kind: "delete";
-      consultationId: number;
-      clinicId?: string;
-      clinicName?: string;
-    };
-
 const patientTypes = new Set<PatientType>(["new", "returning"]);
 const consultationResults = new Set<ConsultationResult>([
   "same_day",
@@ -150,87 +136,6 @@ function writeDeletedConsultationIds(deletedIds: number[]) {
   window.dispatchEvent(new Event(consultationStorageChangedEvent));
 }
 
-function readPendingSupabaseSyncs(): PendingSupabaseSync[] {
-  try {
-    const storedValue = window.localStorage.getItem(pendingSupabaseSyncStorageKey);
-
-    if (!storedValue) {
-      return [];
-    }
-
-    const parsedValue = JSON.parse(storedValue) as unknown;
-
-    return Array.isArray(parsedValue) ? (parsedValue as PendingSupabaseSync[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function writePendingSupabaseSyncs(items: PendingSupabaseSync[]) {
-  window.localStorage.setItem(pendingSupabaseSyncStorageKey, JSON.stringify(items));
-}
-
-function queuePendingSupabaseSync(nextItem: PendingSupabaseSync) {
-  const items = readPendingSupabaseSyncs().filter((item) => item.consultationId !== nextItem.consultationId);
-
-  writePendingSupabaseSyncs([...items, nextItem]);
-}
-
-async function synchronizeWithSupabase(item: PendingSupabaseSync) {
-  if (!isSupabaseConfigured()) {
-    return false;
-  }
-
-  if (item.kind === "delete") {
-    return deleteSupabaseConsultation({
-      clinicId: item.clinicId,
-      clinicName: item.clinicName,
-      consultationId: item.consultationId,
-    });
-  }
-
-  return Boolean(await createSupabaseConsultation(item.input, item.consultationId));
-}
-
-async function synchronizeOrQueue(item: PendingSupabaseSync) {
-  if (!isSupabaseConfigured()) {
-    return false;
-  }
-
-  try {
-    if (await synchronizeWithSupabase(item)) {
-      return true;
-    }
-  } catch (error) {
-    console.error("Supabase synchronization failed. The change will be retried.", error);
-  }
-
-  queuePendingSupabaseSync(item);
-
-  return false;
-}
-
-async function flushPendingSupabaseSyncs() {
-  if (!isSupabaseConfigured()) {
-    return;
-  }
-
-  const remainingItems: PendingSupabaseSync[] = [];
-
-  for (const item of readPendingSupabaseSyncs()) {
-    try {
-      if (!(await synchronizeWithSupabase(item))) {
-        remainingItems.push(item);
-      }
-    } catch (error) {
-      console.error("Supabase retry failed.", error);
-      remainingItems.push(item);
-    }
-  }
-
-  writePendingSupabaseSyncs(remainingItems);
-}
-
 function subscribeToStoredConsultations(callback: () => void) {
   window.addEventListener("storage", callback);
   window.addEventListener(consultationStorageChangedEvent, callback);
@@ -316,7 +221,6 @@ async function readServerConsultations(clinicId?: string) {
 
 export function useConsultations(options: UseConsultationsOptions = {}) {
   const [serverConsultations, setServerConsultations] = useState<Consultation[] | null>(null);
-  const syncedServerRecordKeysRef = useRef(new Set<string>());
   const storedConsultationsSnapshot = useSyncExternalStore(
     subscribeToStoredConsultations,
     getStoredConsultationsSnapshot,
@@ -345,48 +249,6 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
       window.removeEventListener(consultationStorageChangedEvent, refreshServerConsultations);
     };
   }, [refreshServerConsultations]);
-
-  useEffect(() => {
-    const retryPendingChanges = () => {
-      void flushPendingSupabaseSyncs();
-    };
-
-    retryPendingChanges();
-    window.addEventListener("online", retryPendingChanges);
-    window.addEventListener("focus", retryPendingChanges);
-
-    return () => {
-      window.removeEventListener("online", retryPendingChanges);
-      window.removeEventListener("focus", retryPendingChanges);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isSupabaseConfigured() || !serverConsultations?.length) {
-      return;
-    }
-
-    const pendingBackups = serverConsultations.flatMap((consultation) => {
-      const key = `${consultation.clinicId ?? defaultConsultationClinicId}:${consultation.id}`;
-
-      if (syncedServerRecordKeysRef.current.has(key)) {
-        return [];
-      }
-
-      syncedServerRecordKeysRef.current.add(key);
-      const { id, ...input } = consultation;
-
-      return [
-        synchronizeOrQueue({
-          kind: "upsert",
-          consultationId: id,
-          input,
-        }),
-      ];
-    });
-
-    void Promise.all(pendingBackups);
-  }, [serverConsultations]);
 
   const storedConsultations = useMemo(() => {
     const [storedConsultationsValue = ""] = storedConsultationsSnapshot.split("::");
@@ -454,8 +316,6 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
       clinicId: input.clinicId ?? serverClinic?.id ?? defaultConsultationClinicId,
       clinicName: input.clinicName ?? serverClinic?.name,
     };
-    let localConsultation: Consultation | null = null;
-
     try {
       const payload = await fetchLocalApiJson<ConsultationMutationApiResponse>("/app-data/consultations", {
         body: JSON.stringify(serverInput),
@@ -467,14 +327,14 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
         setServerConsultations((current) => upsertConsultation(current ?? [], serverConsultation));
         window.dispatchEvent(new Event(consultationStorageChangedEvent));
 
-        localConsultation = serverConsultation;
+        return serverConsultation;
       }
     } catch {
       // Fall back to browser storage when the server PC API is not available.
     }
 
     try {
-      const supabaseConsultation = await createSupabaseConsultation(serverInput, localConsultation?.id ?? nextId);
+      const supabaseConsultation = await createSupabaseConsultation(serverInput, nextId);
 
       if (supabaseConsultation) {
         setServerConsultations((current) => upsertConsultation(current ?? [], supabaseConsultation));
@@ -483,16 +343,6 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
         return supabaseConsultation;
       }
     } catch (error) {
-      if (localConsultation) {
-        queuePendingSupabaseSync({
-          kind: "upsert",
-          consultationId: localConsultation.id,
-          input: serverInput,
-        });
-
-        return localConsultation;
-      }
-
       if (isSupabaseConfigured()) {
         throw new Error(
           error instanceof Error
@@ -500,16 +350,6 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
             : "Supabase 상담일지 저장에 실패했습니다.",
         );
       }
-    }
-
-    if (localConsultation) {
-      queuePendingSupabaseSync({
-        kind: "upsert",
-        consultationId: localConsultation.id,
-        input: serverInput,
-      });
-
-      return localConsultation;
     }
 
     if (isSupabaseConfigured()) {
@@ -534,8 +374,6 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
       clinicId: input.clinicId ?? serverClinic?.id ?? defaultConsultationClinicId,
       clinicName: input.clinicName ?? serverClinic?.name,
     };
-    let localConsultation: Consultation | null = null;
-
     try {
       const payload = await fetchLocalApiJson<ConsultationMutationApiResponse>(
         `/app-data/consultations/${consultationId}`,
@@ -550,7 +388,7 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
         setServerConsultations((current) => upsertConsultation(current ?? [], serverConsultation));
         window.dispatchEvent(new Event(consultationStorageChangedEvent));
 
-        localConsultation = serverConsultation;
+        return serverConsultation;
       }
     } catch {
       // Existing local-only rows, demo rows, or offline work continue to use browser storage.
@@ -566,16 +404,6 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
         return supabaseConsultation;
       }
     } catch (error) {
-      if (localConsultation) {
-        queuePendingSupabaseSync({
-          kind: "upsert",
-          consultationId,
-          input: serverInput,
-        });
-
-        return localConsultation;
-      }
-
       if (isSupabaseConfigured()) {
         throw new Error(
           error instanceof Error
@@ -583,16 +411,6 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
             : "Supabase 상담일지 수정에 실패했습니다.",
         );
       }
-    }
-
-    if (localConsultation) {
-      queuePendingSupabaseSync({
-        kind: "upsert",
-        consultationId,
-        input: serverInput,
-      });
-
-      return localConsultation;
     }
 
     if (isSupabaseConfigured()) {
@@ -647,13 +465,6 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
         method: "DELETE",
       });
       window.dispatchEvent(new Event(consultationStorageChangedEvent));
-
-      await synchronizeOrQueue({
-        kind: "delete",
-        clinicId: getServerClinicId(options.clinicId),
-        clinicName: getActiveLocalApiClinic()?.name,
-        consultationId,
-      });
 
       return true;
     } catch {
