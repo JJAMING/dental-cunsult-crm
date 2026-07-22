@@ -182,6 +182,116 @@ function formatDentwebAppointment(appointment?: DentwebSnapshotAppointment | nul
     .join(" · ");
 }
 
+function formatDentwebBirthDate(value?: string) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+
+  if (digits.length !== 8) {
+    return value || "-";
+  }
+
+  return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+}
+
+function getDentwebAge(value?: string) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+
+  if (digits.length !== 8) {
+    return "-";
+  }
+
+  const year = Number(digits.slice(0, 4));
+  const month = Number(digits.slice(4, 6));
+  const day = Number(digits.slice(6, 8));
+  const today = new Date();
+  let age = today.getFullYear() - year;
+
+  if (today.getMonth() + 1 < month || (today.getMonth() + 1 === month && today.getDate() < day)) {
+    age -= 1;
+  }
+
+  return Number.isFinite(age) && age >= 0 ? `${age}세` : "-";
+}
+
+function formatDentwebGender(value?: string) {
+  if (value === "female" || value === "true" || value === "1") {
+    return "여";
+  }
+
+  if (value === "male" || value === "false" || value === "0") {
+    return "남";
+  }
+
+  return "-";
+}
+
+function formatDentwebPhone(value?: string) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+
+  if (digits.length === 11) {
+    return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+  }
+
+  if (digits.length === 10) {
+    return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+
+  return value || "-";
+}
+
+function DentwebPatientSearchDropdown({
+  loading,
+  message,
+  onSelect,
+  patients,
+  status,
+}: {
+  loading: boolean;
+  message: string;
+  onSelect: (patient: DentwebSnapshotPatient) => void;
+  patients: DentwebSnapshotPatient[];
+  status: PatientSearchState["status"];
+}) {
+  return (
+    <div className="absolute left-0 top-full z-30 mt-2 w-[min(44rem,calc(100vw-3rem))] overflow-hidden rounded-lg border border-pebble bg-white shadow-[0_18px_38px_rgba(28,39,66,0.18)]">
+      <div className="flex items-center justify-between gap-3 border-b border-mist bg-fog px-3 py-2">
+        <p className="text-xs font-bold text-ink">덴트웹 환자 검색</p>
+        <p className={status === "error" ? "text-xs font-bold text-red-600" : "text-xs font-bold text-slate"}>{message}</p>
+      </div>
+      {patients.length ? (
+        <div className="max-h-80 overflow-y-auto p-2">
+          {patients.map((patient, index) => {
+            const appointmentText = formatDentwebAppointment(patient.latestAppointment);
+
+            return (
+              <button
+                key={`${patient.id ?? patient.chartNo ?? patient.patientName}-${index}`}
+                type="button"
+                onClick={() => onSelect(patient)}
+                className="w-full rounded-md px-3 py-3 text-left transition hover:bg-periwinkle focus:bg-periwinkle"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-bold text-ink">{patient.patientName || "이름 없음"}</span>
+                  <span className="text-sm font-bold text-monday-violet">차트 {patient.chartNo || "-"}</span>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate">
+                  <span>내원경로 {patient.visitChannel || "-"}</span>
+                  <span>성별 {formatDentwebGender(patient.gender)}</span>
+                  <span>생년월일 {formatDentwebBirthDate(patient.birthDate)}</span>
+                  <span>만 나이 {getDentwebAge(patient.birthDate)}</span>
+                  <span>전화번호 {formatDentwebPhone(patient.phone)}</span>
+                </div>
+                <p className="mt-1 text-xs text-slate">마지막 예약 {appointmentText || "-"}</p>
+              </button>
+            );
+          })}
+        </div>
+      ) : loading ? null : (
+        <p className="px-3 py-4 text-xs font-bold text-slate">검색 조건에 맞는 환자가 없습니다.</p>
+      )}
+    </div>
+  );
+}
+
 function getDentwebPatientKey(patient?: DentwebSnapshotPatient) {
   if (!patient) {
     return "";
@@ -327,6 +437,7 @@ export function ConsultationFormDialog({
     patients: [],
     status: "idle",
   });
+  const [isPatientSearchDropdownOpen, setIsPatientSearchDropdownOpen] = useState(false);
   const [appointmentLookupState, setAppointmentLookupState] = useState<AppointmentLookupState>({
     appointments: [],
     message: "",
@@ -370,6 +481,7 @@ export function ConsultationFormDialog({
     const query = (formState.patientName.trim() || formState.chartNo.trim()).trim();
 
     if (!query) {
+      setIsPatientSearchDropdownOpen(false);
       if (!silent) {
         setPatientSearchState({
           message: "성함 또는 차트번호를 입력한 뒤 검색하세요.",
@@ -379,6 +491,8 @@ export function ConsultationFormDialog({
       }
       return;
     }
+
+    setIsPatientSearchDropdownOpen(true);
 
     if (!silent) {
       setPatientSearchState({
@@ -469,6 +583,7 @@ export function ConsultationFormDialog({
       message: `${patient.patientName || "선택한 환자"} 정보를 상담 등록에 반영했습니다.`,
       selectedPatientId: patient.id,
     }));
+    setIsPatientSearchDropdownOpen(false);
     void loadAppointmentsForPatient(patient);
   };
 
@@ -605,7 +720,10 @@ export function ConsultationFormDialog({
               const visibleValue = field.amount ? formatAmountInput(fieldValue) : fieldValue;
 
               return (
-                <label key={field.name} className="space-y-2">
+                <label
+                  key={field.name}
+                  className={field.name === "patientName" ? "relative space-y-2" : "space-y-2"}
+                >
                   <span className="text-xs font-bold text-slate">{field.label}</span>
                   <div className={field.name === "patientName" ? "flex gap-2" : undefined}>
                     <input
@@ -619,6 +737,14 @@ export function ConsultationFormDialog({
                           field.name,
                           field.numeric ? digitsOnly(event.target.value) : event.target.value,
                         );
+
+                        if (field.name === "patientName") {
+                          setIsPatientSearchDropdownOpen(Boolean(event.target.value.trim()));
+                          setPatientSearchState((current) => ({
+                            ...current,
+                            selectedPatientId: undefined,
+                          }));
+                        }
                       }}
                       className={baseInputClass}
                     />
@@ -634,10 +760,21 @@ export function ConsultationFormDialog({
                       </button>
                     ) : null}
                   </div>
+                  {field.name === "patientName" &&
+                  isPatientSearchDropdownOpen &&
+                  patientSearchState.status !== "idle" ? (
+                    <DentwebPatientSearchDropdown
+                      loading={patientSearchState.status === "loading"}
+                      message={patientSearchState.message}
+                      onSelect={applyDentwebPatient}
+                      patients={patientSearchState.patients}
+                      status={patientSearchState.status}
+                    />
+                  ) : null}
                 </label>
               );
             })}
-            {patientSearchState.status !== "idle" ? (
+            {patientSearchState.status !== "idle" && !isPatientSearchDropdownOpen ? (
               <div className="md:col-span-2 xl:col-span-4">
                 <div
                   className={[
@@ -651,7 +788,7 @@ export function ConsultationFormDialog({
                     <p className="font-bold text-ink">덴트웹 환자 검색</p>
                     <p className="text-xs font-bold">{patientSearchState.message}</p>
                   </div>
-                  {patientSearchState.patients.length ? (
+                  {!selectedDentwebPatient && patientSearchState.patients.length ? (
                     <div className="mt-3 grid gap-2 md:grid-cols-2">
                       {patientSearchState.patients.map((patient, index) => {
                         const appointmentText = formatDentwebAppointment(patient.latestAppointment);

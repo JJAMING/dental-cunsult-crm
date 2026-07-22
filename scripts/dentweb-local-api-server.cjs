@@ -771,7 +771,9 @@ async function loadDentwebSqlServerReadOnlyAdapter(config) {
           patient.[n환자ID] AS [sourceId],
           patient.[sz차트번호] AS [chartNo],
           patient.[sz이름] AS [patientName],
+          patient.[b성별] AS [gender],
           patient.[sz생년월일] AS [birthDate],
+          COALESCE(NULLIF(patient.[sz휴대폰번호], ''), patient.[sz전화번호]) AS [phone],
           patient.[sz최종내원일] AS [lastVisitDate],
           doctor.[sz이름] AS [doctor]
         FROM [dbo].[PUB_V환자정보] AS patient
@@ -810,7 +812,9 @@ async function loadDentwebSqlServerReadOnlyAdapter(config) {
       sourceId: normalizeMappedValue(row.sourceId),
       chartNo: normalizeMappedValue(row.chartNo),
       patientName: normalizeMappedValue(row.patientName),
+      gender: row.gender === null || row.gender === undefined ? "" : Boolean(row.gender) ? "female" : "male",
       birthDate: normalizeMappedValue(row.birthDate),
+      phone: normalizeMappedValue(row.phone),
       lastVisitDate: normalizeMappedValue(row.lastVisitDate),
       doctor: normalizeMappedValue(row.doctor),
     }));
@@ -2568,6 +2572,34 @@ function findDentwebAppointmentsForPatient(db, clinicId, patientRow, limit = 3) 
     .map(mapDentwebAppointmentSnapshotRow);
 }
 
+function findDentwebPatientVisitChannel(db, clinicId, patientRow) {
+  const chartNo = patientRow.chart_no || "";
+  const patientName = patientRow.patient_name || "";
+
+  if (!chartNo && !patientName) {
+    return "";
+  }
+
+  const row = db
+    .prepare(
+      `
+        SELECT visit_channel
+        FROM consultations
+        WHERE clinic_id = ?
+          AND COALESCE(visit_channel, '') <> ''
+          AND (
+            (? <> '' AND chart_no = ?)
+            OR (? <> '' AND patient_name = ?)
+          )
+        ORDER BY consultation_date DESC, id DESC
+        LIMIT 1
+      `,
+    )
+    .get(clinicId, chartNo, chartNo, patientName, patientName);
+
+  return row?.visit_channel || "";
+}
+
 function mapDentwebPatientSnapshotRow(db, clinicId, row) {
   const raw = safeParseJsonObject(row.raw_json);
   const appointments = findDentwebAppointmentsForPatient(db, clinicId, row, 3);
@@ -2577,6 +2609,9 @@ function mapDentwebPatientSnapshotRow(db, clinicId, row) {
     chartNo: row.chart_no || "",
     patientName: row.patient_name || "",
     birthDate: row.birth_date || "",
+    gender: pickText(raw, ["gender", "sex"]),
+    phone: pickText(raw, ["phone", "mobilePhone", "phoneNumber", "mobile", "tel"]),
+    visitChannel: findDentwebPatientVisitChannel(db, clinicId, row),
     hasPhoneHash: Boolean(row.phone_hash),
     latestAppointment: appointments[0] || null,
     appointments,

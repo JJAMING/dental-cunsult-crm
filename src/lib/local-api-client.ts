@@ -58,13 +58,16 @@ export type DentwebSnapshotPatient = {
   appointments?: DentwebSnapshotAppointment[];
   birthDate?: string;
   chartNo?: string;
+  gender?: string;
   hasPhoneHash?: boolean;
   id?: number | string;
   latestAppointment?: DentwebSnapshotAppointment | null;
   memo?: string;
   patientName?: string;
+  phone?: string;
   rawKeys?: string[];
   syncedAt?: string;
+  visitChannel?: string;
 };
 
 export type DentwebPatientSearchResponse = {
