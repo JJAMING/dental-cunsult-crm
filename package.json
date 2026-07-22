@@ -1,19 +1,39 @@
 {
   "name": "dental-consult-crm",
   "version": "0.1.0",
+  "description": "Dental consultation and Dentweb-connected CRM",
+  "author": "Dental Consult CRM",
   "private": true,
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "dentweb:server": "node scripts/dentweb-local-api-server.cjs",
+    "desktop": "electron .",
+    "desktop:local": "set DENTAL_CONSULT_APP_URL=http://127.0.0.1:3100&& electron .",
+    "desktop:dist": "electron-builder --win nsis",
     "supabase": "supabase",
     "supabase:start": "supabase start",
     "supabase:stop": "supabase stop",
     "supabase:status": "supabase status",
     "db:reset": "supabase db reset",
     "db:migration:new": "supabase migration new"
+  },
+  "build": {
+    "appId": "com.dentalconsult.crm",
+    "productName": "Dental Consult CRM",
+    "asar": true,
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    }
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
@@ -29,6 +49,8 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
     "supabase": "^2.107.0",

@@ -28,6 +28,25 @@ The script creates the local server configuration, prompts for the server-only S
 4. Map patient and appointment fields, preview the mapping, then run a read-only sync.
 5. On another internal PC, select Client Mode, enter the server address and pairing code, then approve the request on the server PC.
 
+## Desktop client
+
+The Vercel web site is served over HTTPS, so a normal browser can block direct requests to an internal `http://` server address. Use the Desktop Client on reception, consultation, and doctor PCs.
+
+For local development:
+
+```powershell
+npm run dev
+npm run desktop:local
+```
+
+To create a Windows installer:
+
+```powershell
+npm run desktop:dist
+```
+
+The Desktop Client keeps Node.js disabled in the page itself. It passes only approved requests to a private-network Dental Consult local API on port `34254` through a narrow native bridge.
+
 ## Security
 
 - Use only a Private Windows network profile.

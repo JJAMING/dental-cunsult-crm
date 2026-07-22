@@ -12,6 +12,27 @@ type LocalApiClientConfig = {
   activeClinic: ClinicSettings;
   baseUrl: string;
 };
+
+type DesktopLocalApiRequest = {
+  body?: string;
+  headers?: Record<string, string>;
+  method: "DELETE" | "GET" | "POST" | "PUT";
+  url: string;
+};
+
+type DesktopLocalApiResponse = {
+  body: string;
+  ok: boolean;
+  status: number;
+};
+
+declare global {
+  interface Window {
+    dentalConsultDesktop?: {
+      requestLocalApi(request: DesktopLocalApiRequest): Promise<DesktopLocalApiResponse>;
+    };
+  }
+}
 export type LocalApiRuntimeStatus = {
   baseUrl: string;
   checkedAt: string;
@@ -273,15 +294,25 @@ export async function fetchLocalApiJson<T>(path: string, init: RequestInit = {})
   const timeoutId = window.setTimeout(() => controller.abort(), requestTimeoutMs);
 
   try {
-    const response = await fetch(`${config.baseUrl}${path}`, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...getLocalApiAuthHeaders(config),
-        ...(init.headers ?? {}),
-      },
-      signal: controller.signal,
-    });
+    const requestHeaders = {
+      "Content-Type": "application/json",
+      ...getLocalApiAuthHeaders(config),
+      ...(init.headers ?? {}),
+    };
+    const url = `${config.baseUrl}${path}`;
+    const desktopBridge = window.dentalConsultDesktop;
+    const response = desktopBridge
+      ? await desktopBridge.requestLocalApi({
+          body: typeof init.body === "string" ? init.body : undefined,
+          headers: Object.fromEntries(new Headers(requestHeaders).entries()),
+          method: (init.method ?? "GET").toUpperCase() as DesktopLocalApiRequest["method"],
+          url,
+        })
+      : await fetch(url, {
+          ...init,
+          headers: requestHeaders,
+          signal: controller.signal,
+        });
 
     if (!response.ok) {
       const state = response.status === 401 || response.status === 403 ? "unauthorized" : "fallback";
@@ -298,7 +329,9 @@ export async function fetchLocalApiJson<T>(path: string, init: RequestInit = {})
       throw new Error(`local_api_${response.status}`);
     }
 
-    const payload = (await response.json()) as T;
+    const payload = desktopBridge
+      ? (JSON.parse((response as DesktopLocalApiResponse).body) as T)
+      : ((await (response as Response).json()) as T);
 
     writeLocalApiRuntimeStatus(
       buildLocalApiStatus(config, "connected", "서버 PC 중앙 DB에 연결되어 있습니다."),
