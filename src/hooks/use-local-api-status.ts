@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import {
+  checkLocalApiConnection,
   type LocalApiRuntimeStatus,
   readLocalApiRuntimeStatus,
   subscribeToLocalApiRuntimeStatus,
@@ -27,6 +28,33 @@ export function useLocalApiStatus() {
     getStatusSnapshot,
     () => hydrationSnapshot,
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    let attempt = 0;
+
+    const checkConnection = async () => {
+      await checkLocalApiConnection();
+
+      if (!cancelled && attempt < 2) {
+        attempt += 1;
+        retryTimer = window.setTimeout(() => {
+          void checkConnection();
+        }, 1500);
+      }
+    };
+
+    void checkConnection();
+
+    return () => {
+      cancelled = true;
+
+      if (retryTimer) {
+        window.clearTimeout(retryTimer);
+      }
+    };
+  }, []);
 
   return useMemo(() => {
     try {

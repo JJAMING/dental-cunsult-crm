@@ -641,7 +641,21 @@ function getMssqlModule() {
     mssqlModule = require("mssql");
     return mssqlModule;
   } catch {
-    return null;
+    // Packaged agents run from resources/agent, while dependencies remain in
+    // the Electron application archive. The desktop parent supplies this
+    // server-local fallback path only when starting the agent.
+    const bundledModulesDirectory = String(process.env.DENTAL_CONSULT_NODE_MODULES_DIR || "").trim();
+
+    if (!bundledModulesDirectory) {
+      return null;
+    }
+
+    try {
+      mssqlModule = require(path.join(bundledModulesDirectory, "mssql"));
+      return mssqlModule;
+    } catch {
+      return null;
+    }
   }
 }
 

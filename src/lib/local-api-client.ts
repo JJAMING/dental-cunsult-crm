@@ -11,6 +11,7 @@ import {
 type LocalApiClientConfig = {
   activeClinic: ClinicSettings;
   baseUrl: string;
+  mode: "server" | "client";
 };
 
 type DesktopLocalApiRequest = {
@@ -138,6 +139,10 @@ type LocalApiClientCredentials = {
   token?: string;
 };
 
+type StoredLocalApiRegistration = LocalApiClientCredentials & {
+  savedAt?: string;
+};
+
 const requestTimeoutMs = 2500;
 const localApiDeviceIdStorageKey = "dental-consult-dentweb-device-id";
 const localApiClientTokenStorageKey = "dental-consult-dentweb-client-token-v1";
@@ -155,6 +160,49 @@ function normalizeHost(host: string) {
   return trimmedHost.replace(/^https?:\/\//, "").replace(/\/$/, "");
 }
 
+function normalizeServerUrl(value: string) {
+  try {
+    const url = new URL(value);
+
+    if (url.protocol !== "http:" || !url.hostname || !url.port) {
+      return null;
+    }
+
+    return `http://${url.hostname}:${url.port}`;
+  } catch {
+    return null;
+  }
+}
+
+function readApprovedLocalApiRegistration(): StoredLocalApiRegistration | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const storedValue = window.localStorage.getItem(localApiRegistrationStorageKey);
+
+    if (!storedValue) {
+      return null;
+    }
+
+    const registration = JSON.parse(storedValue) as StoredLocalApiRegistration;
+    const serverUrl = typeof registration.serverUrl === "string" ? normalizeServerUrl(registration.serverUrl) : null;
+    const isApproved = registration.status === "approved" || Boolean(registration.token);
+
+    if (!isApproved || !serverUrl || !registration.deviceId) {
+      return null;
+    }
+
+    return {
+      ...registration,
+      serverUrl,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function getLocalApiClientConfig(): LocalApiClientConfig | null {
   if (typeof window === "undefined") {
     return null;
@@ -168,12 +216,14 @@ export function getLocalApiClientConfig(): LocalApiClientConfig | null {
     const activeClinic =
       settings.clinics.find((clinic) => clinic.id === settings.activeClinicId) ?? settings.clinics[0];
     const integration = activeClinic.dentwebIntegration;
+    const approvedRegistration = readApprovedLocalApiRegistration();
     const host = normalizeHost(integration.serverHost);
     const port = Number.isFinite(integration.serverPort) ? integration.serverPort : 34254;
 
     return {
       activeClinic,
-      baseUrl: `http://${host}:${port}`,
+      baseUrl: approvedRegistration?.serverUrl ?? `http://${host}:${port}`,
+      mode: approvedRegistration ? "client" : integration.mode,
     };
   } catch {
     return null;
@@ -254,10 +304,10 @@ export function readLocalApiRuntimeStatus(): LocalApiRuntimeStatus {
     checkedAt: "",
     clinicName: config?.activeClinic.name ?? "",
     message:
-      config?.activeClinic.dentwebIntegration.mode === "client"
+      config?.mode === "client"
         ? "서버 PC 연결 확인 전입니다."
         : "서버 PC 로컬 저장 상태 확인 전입니다.",
-    mode: config?.activeClinic.dentwebIntegration.mode ?? "server",
+    mode: config?.mode ?? "server",
     state: "unknown",
   };
 
@@ -301,13 +351,13 @@ function buildLocalApiStatus(
     checkedAt: new Date().toISOString(),
     clinicName: config.activeClinic.name,
     message,
-    mode: config.activeClinic.dentwebIntegration.mode,
+    mode: config.mode,
     state,
   };
 }
 
 function getLocalApiAuthHeaders(config: LocalApiClientConfig) {
-  if (config.activeClinic.dentwebIntegration.mode !== "client") {
+  if (config.mode !== "client") {
     return {};
   }
 
@@ -385,6 +435,16 @@ export async function fetchLocalApiJson<T>(path: string, init: RequestInit = {})
   } finally {
     window.clearTimeout(timeoutId);
   }
+}
+
+export async function checkLocalApiConnection() {
+  try {
+    await fetchLocalApiJson<{ ok?: boolean }>("/health");
+  } catch {
+    // fetchLocalApiJson already records the latest connection state.
+  }
+
+  return readLocalApiRuntimeStatus();
 }
 
 export function getActiveLocalApiClinic() {

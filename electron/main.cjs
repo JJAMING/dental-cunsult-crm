@@ -103,7 +103,55 @@ function getAgentRuntimeDirectory() {
   return path.join(app.getPath("userData"), "agent");
 }
 
+function getBundledNodeModulesDirectory() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "app.asar", "node_modules");
+  }
+
+  return path.join(__dirname, "..", "node_modules");
+}
+
+function readServerAgentConfig() {
+  try {
+    const configPath = path.join(getAgentRuntimeDirectory(), "server-config.json");
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    const port = Number(parsed.port);
+
+    if (parsed.mode !== "server" || !Number.isInteger(port) || port < 1 || port > 65535) {
+      return null;
+    }
+
+    return { port };
+  } catch {
+    return null;
+  }
+}
+
+async function isServerAgentHealthy(port) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 1200);
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: controller.signal,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function startBundledServerAgent() {
+  if (serverAgentProcess && !serverAgentProcess.killed) {
+    return;
+  }
+
   const agentPath = getBundledAgentPath();
 
   if (!fs.existsSync(agentPath)) {
@@ -119,6 +167,7 @@ function startBundledServerAgent() {
       ...process.env,
       ELECTRON_RUN_AS_NODE: "1",
       DENTAL_CONSULT_RUNTIME_DIR: getAgentRuntimeDirectory(),
+      DENTAL_CONSULT_NODE_MODULES_DIR: getBundledNodeModulesDirectory(),
     },
   });
 
@@ -126,9 +175,37 @@ function startBundledServerAgent() {
     console.error("Could not start the Dental Consult server agent.", error);
   });
 
+  serverAgentProcess.once("exit", () => {
+    serverAgentProcess = undefined;
+  });
+
   // A scheduled task runs this hidden parent process. The timer keeps it
   // alive while its child owns the local HTTP API.
   serverAgentHeartbeat = setInterval(() => {}, 60_000);
+}
+
+async function ensureBundledServerAgentRunning() {
+  const config = readServerAgentConfig();
+
+  if (!config) {
+    return false;
+  }
+
+  if (await isServerAgentHealthy(config.port)) {
+    return true;
+  }
+
+  startBundledServerAgent();
+
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await wait(350);
+
+    if (await isServerAgentHealthy(config.port)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function stopBundledServerAgent() {
@@ -141,11 +218,16 @@ function stopBundledServerAgent() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (isServerAgentMode) {
     startBundledServerAgent();
     return;
   }
+
+  // A server PC may also be used as a regular workstation. If its server
+  // configuration already exists, restore the hidden DentWeb agent before the
+  // renderer starts requesting reception and patient data.
+  await ensureBundledServerAgentRunning();
 
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
 
