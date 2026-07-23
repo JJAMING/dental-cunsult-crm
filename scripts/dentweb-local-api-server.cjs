@@ -844,7 +844,7 @@ function mapDentwebReceptionStatus(value) {
   };
 }
 
-function mapDentwebReceptionRow(row, index, staffNames, chairNames, date) {
+function mapDentwebReceptionRow(row, index, totalCount, staffNames, chairNames, date) {
   const status = mapDentwebReceptionStatus(getDentwebRowValue(row, ["n상태", "status", "Status"]));
   const birthDate = normalizeMappedValue(getDentwebRowValue(row, ["sz생년월일", "birthDate"]));
   const genderValue = getDentwebRowValue(row, ["b성별", "gender", "Gender"]);
@@ -856,7 +856,9 @@ function mapDentwebReceptionRow(row, index, staffNames, chairNames, date) {
   const isNewPatient = getDentwebRowValue(row, ["b신환여부", "isNewPatient", "newPatient"]);
 
   return {
-    sequence: index + 1,
+    // DentWeb returns the newest reception first. Keep that useful display
+    // order while showing the actual daily reception order in reverse.
+    sequence: totalCount - index,
     statusCode: status.code,
     statusLabel: status.label,
     patientId: normalizeMappedValue(getDentwebRowValue(row, ["n환자ID", "patientId"])),
@@ -902,8 +904,8 @@ async function buildDentwebTodayReceptionPayload(config, input = {}) {
     const chairNames = new Map(
       chairResult.recordset.map((chair) => [normalizeMappedValue(chair.id), normalizeMappedValue(chair.name)]),
     );
-    const patients = receptionResult.recordset.map((row, index) =>
-      mapDentwebReceptionRow(row, index, staffNames, chairNames, date),
+    const patients = receptionResult.recordset.map((row, index, rows) =>
+      mapDentwebReceptionRow(row, index, rows.length, staffNames, chairNames, date),
     );
 
     return {
