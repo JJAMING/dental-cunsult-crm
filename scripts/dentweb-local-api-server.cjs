@@ -246,6 +246,8 @@ let mssqlModule;
 let localDb;
 let supabaseSyncInProgress = false;
 let supabaseSyncTimer;
+const dentwebReceptionCache = new Map();
+const dentwebReceptionCacheDurationMs = 4_000;
 const serverSecretKeys = new Set([
   "DENTAL_CONSULT_SUPABASE_URL",
   "DENTAL_CONSULT_SUPABASE_SERVICE_ROLE_KEY",
@@ -881,9 +883,7 @@ function mapDentwebReceptionRow(row, index, totalCount, staffNames, chairNames, 
   };
 }
 
-async function buildDentwebTodayReceptionPayload(config, input = {}) {
-  const date = normalizeDentwebReceptionDate(input.date);
-
+async function queryDentwebTodayReception(config, date) {
   return withDentwebSqlServer(config, async ({ sql, pool }) => {
     const [receptionResult, staffResult, chairResult] = await Promise.all([
       pool.request().input("sz날짜", sql.VarChar(8), date).execute("dbo.PUB_P접수목록"),
@@ -921,6 +921,33 @@ async function buildDentwebTodayReceptionPayload(config, input = {}) {
       checkedAt: new Date().toISOString(),
     };
   });
+}
+
+async function buildDentwebTodayReceptionPayload(config, input = {}) {
+  const date = normalizeDentwebReceptionDate(input.date);
+  const cacheKey = `${config.clinicId}:${date}`;
+  const now = Date.now();
+  const cached = dentwebReceptionCache.get(cacheKey);
+
+  if (cached?.payload && now - cached.createdAt < dentwebReceptionCacheDurationMs) {
+    return cached.payload;
+  }
+
+  if (cached?.pending) {
+    return cached.pending;
+  }
+
+  const pending = queryDentwebTodayReception(config, date);
+  dentwebReceptionCache.set(cacheKey, { createdAt: now, pending });
+
+  try {
+    const payload = await pending;
+    dentwebReceptionCache.set(cacheKey, { createdAt: Date.now(), payload });
+    return payload;
+  } catch (error) {
+    dentwebReceptionCache.delete(cacheKey);
+    throw error;
+  }
 }
 
 async function testDentwebSqlServerConnection(config) {

@@ -1,13 +1,16 @@
 "use client";
 
 import { ClipboardList, RefreshCw, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   loadDentwebTodayReception,
   type DentwebReceptionPatient,
 } from "@/lib/local-api-client";
 
 type StatusFilter = "all" | 0 | 1 | 2 | 3 | 4;
+
+const visibleRefreshIntervalMs = 5_000;
+const backgroundRefreshIntervalMs = 30_000;
 
 const receptionStatuses = [
   { code: 0, label: "접수" },
@@ -45,6 +48,21 @@ function formatReceptionDate(value: string) {
   const weekday = ["일", "월", "화", "수", "목", "금", "토"][new Date(year, month - 1, day).getDay()];
 
   return `${year}년 ${month}월 ${day}일 (${weekday})`;
+}
+
+function formatLastUpdated(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 function formatTime(value?: string) {
@@ -292,36 +310,85 @@ export function TodayReceptionBoard({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [selectedPatient, setSelectedPatient] = useState<DentwebReceptionPatient | null>(null);
   const [isAllListOpen, setIsAllListOpen] = useState(false);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState("");
   const todayValue = useMemo(() => getTodayValue(), []);
+  const requestInFlightRef = useRef(false);
+  const hasReceptionDataRef = useRef(false);
 
   useEffect(() => {
     let isCurrent = true;
+    let refreshTimer: number | undefined;
+    hasReceptionDataRef.current = false;
 
-    loadDentwebTodayReception({ clinicId, date: todayValue })
-      .then((payload) => {
+    const loadReception = async (showLoading = false) => {
+      if (requestInFlightRef.current) {
+        return;
+      }
+
+      requestInFlightRef.current = true;
+
+      if (showLoading && isCurrent) {
+        setIsLoading(true);
+      }
+
+      try {
+        const payload = await loadDentwebTodayReception({ clinicId, date: todayValue });
+
         if (!isCurrent) {
           return;
         }
 
-        setPatients(payload.patients ?? []);
+        const nextPatients = payload.patients ?? [];
+        hasReceptionDataRef.current = nextPatients.length > 0;
+        setPatients(nextPatients);
+        setLastUpdatedAt(new Date().toISOString());
         setMessage("");
-      })
-      .catch(() => {
-        if (!isCurrent) {
-          return;
+      } catch {
+        if (isCurrent && !hasReceptionDataRef.current) {
+          setMessage("덴트웹 서버에 연결하지 못했습니다. 서버 PC 연동 상태를 확인해주세요.");
         }
+      } finally {
+        requestInFlightRef.current = false;
 
-        setPatients([]);
-        setMessage("덴트웹 서버에 연결하지 못했습니다. 서버 PC 연동 상태를 확인해주세요.");
-      })
-      .finally(() => {
-        if (isCurrent) {
+        if (isCurrent && showLoading) {
           setIsLoading(false);
         }
-      });
+      }
+    };
+
+    const scheduleRefresh = () => {
+      if (refreshTimer) {
+        window.clearInterval(refreshTimer);
+      }
+
+      const interval = document.visibilityState === "visible"
+        ? visibleRefreshIntervalMs
+        : backgroundRefreshIntervalMs;
+      refreshTimer = window.setInterval(() => {
+        void loadReception();
+      }, interval);
+    };
+
+    const handleVisibilityChange = () => {
+      scheduleRefresh();
+
+      if (document.visibilityState === "visible") {
+        void loadReception();
+      }
+    };
+
+    void loadReception(true);
+    scheduleRefresh();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       isCurrent = false;
+
+      if (refreshTimer) {
+        window.clearInterval(refreshTimer);
+      }
+
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [clinicId, reloadKey, todayValue]);
 
@@ -357,7 +424,10 @@ export function TodayReceptionBoard({
           </div>
           <div>
             <h2 className="text-lg font-bold text-ink">오늘의 접수·예약 현황</h2>
-            <p className="mt-1 text-sm text-slate">{formatReceptionDate(todayValue)} · 덴트웹 실시간 조회</p>
+            <p className="mt-1 text-sm text-slate">
+              {formatReceptionDate(todayValue)} · 덴트웹 실시간 조회
+              {lastUpdatedAt ? ` · 마지막 갱신 ${formatLastUpdated(lastUpdatedAt)}` : ""}
+            </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
