@@ -246,8 +246,11 @@ let mssqlModule;
 let localDb;
 let supabaseSyncInProgress = false;
 let supabaseSyncTimer;
+let dentwebSnapshotSyncInProgress = false;
+let dentwebSnapshotSyncTimer;
 const dentwebReceptionCache = new Map();
 const dentwebReceptionCacheDurationMs = 4_000;
+const dentwebSnapshotSyncIntervalMs = 30 * 60_000;
 const serverSecretKeys = new Set([
   "DENTAL_CONSULT_SUPABASE_URL",
   "DENTAL_CONSULT_SUPABASE_SERVICE_ROLE_KEY",
@@ -3470,6 +3473,31 @@ function inspectDentwebPath(targetPath, source = "manual") {
   }
 }
 
+async function syncDentwebSnapshotsInBackground(config) {
+  if (dentwebSnapshotSyncInProgress) {
+    return;
+  }
+
+  dentwebSnapshotSyncInProgress = true;
+
+  try {
+    const payload = await runDentwebReadOnlySync(config);
+
+    if (!payload.ok) {
+      console.warn(`Dentweb snapshot sync failed: ${payload.message || "unknown_error"}`);
+      return;
+    }
+
+    console.log("Dentweb patient and appointment snapshots were refreshed.");
+  } catch (error) {
+    console.warn(
+      `Dentweb snapshot sync failed: ${error instanceof Error ? error.message : "unknown_error"}`,
+    );
+  } finally {
+    dentwebSnapshotSyncInProgress = false;
+  }
+}
+
 function collectDentwebPathCandidates(manualPath = "") {
   const candidates = [];
   const seenPaths = new Set();
@@ -5162,14 +5190,21 @@ server.listen(config.port, config.host, () => {
   supabaseSyncTimer = setInterval(() => {
     void syncPendingSupabaseJobs(config, 100);
   }, 60_000);
+
+  void syncDentwebSnapshotsInBackground(config);
+  dentwebSnapshotSyncTimer = setInterval(() => {
+    void syncDentwebSnapshotsInBackground(config);
+  }, dentwebSnapshotSyncIntervalMs);
 });
 
 process.on("SIGINT", () => {
   clearInterval(supabaseSyncTimer);
+  clearInterval(dentwebSnapshotSyncTimer);
   server.close(() => process.exit(0));
 });
 
 process.on("SIGTERM", () => {
   clearInterval(supabaseSyncTimer);
+  clearInterval(dentwebSnapshotSyncTimer);
   server.close(() => process.exit(0));
 });
