@@ -22,6 +22,7 @@ import type { Consultation, ConsultationResult, PatientType } from "@/types/doma
 const consultationStorageKey = "dental-consult-consultations-v1";
 const deletedConsultationIdsStorageKey = "dental-consult-deleted-consultation-ids-v1";
 const consultationStorageChangedEvent = "dental-consult-consultations-changed";
+let lastOfflineConsultationId = 0;
 
 type ConsultationInput = Omit<Consultation, "id">;
 type UseConsultationsOptions = {
@@ -55,6 +56,12 @@ function normalizeConsultation(value: unknown): Consultation | null {
   }
 
   const item = value as Record<string, unknown>;
+  const id = toNumber(item.id);
+
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    return null;
+  }
+
   const patientType = patientTypes.has(item.patientType as PatientType)
     ? (item.patientType as PatientType)
     : "new";
@@ -63,7 +70,7 @@ function normalizeConsultation(value: unknown): Consultation | null {
     : "declined";
 
   return {
-    id: toNumber(item.id),
+    id,
     clinicId: toText(item.clinicId) || undefined,
     clinicName: toText(item.clinicName) || undefined,
     date: toText(item.date),
@@ -154,21 +161,21 @@ function getStoredConsultationsSnapshot() {
   ].join("::");
 }
 
-function nextConsultationId(storedConsultations: Consultation[]) {
-  return Math.max(
-    0,
-    ...demoConsultations.map((consultation) => consultation.id),
-    ...storedConsultations.map((consultation) => consultation.id),
-  ) + 1;
+function nextOfflineConsultationId() {
+  const now = Date.now();
+
+  lastOfflineConsultationId = Math.max(now, lastOfflineConsultationId + 1);
+
+  return lastOfflineConsultationId;
 }
 
 function mergeConsultations(storedConsultations: Consultation[], deletedConsultationIds: number[]) {
   const deletedIds = new Set(deletedConsultationIds);
+  const demoConsultationIds = new Set(demoConsultations.map((consultation) => consultation.id));
   const storedConsultationsById = new Map(
     storedConsultations.map((consultation) => [consultation.id, consultation]),
   );
-  const demoConsultationIds = new Set(demoConsultations.map((consultation) => consultation.id));
-  const storedOnlyConsultations = storedConsultations
+  const storedOnlyConsultations = [...storedConsultationsById.values()]
     .filter((consultation) => !demoConsultationIds.has(consultation.id) && !deletedIds.has(consultation.id))
     .toSorted((first, second) => second.id - first.id);
   const mergedDemoConsultations = demoConsultations
@@ -311,7 +318,7 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
   const addConsultation = useCallback(async (input: ConsultationInput) => {
     const serverClinic = getActiveLocalApiClinic();
     const currentConsultations = readStoredConsultations();
-    const nextId = nextConsultationId(currentConsultations);
+    const nextId = nextOfflineConsultationId();
     const serverInput = {
       ...input,
       clinicId: input.clinicId ?? serverClinic?.id ?? defaultConsultationClinicId,
@@ -325,8 +332,8 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
       const serverConsultation = normalizeConsultation(payload.consultation);
 
       if (serverConsultation) {
+        writeStoredConsultations(upsertConsultation(currentConsultations, serverConsultation));
         setServerConsultations((current) => upsertConsultation(current ?? [], serverConsultation));
-        window.dispatchEvent(new Event(consultationStorageChangedEvent));
 
         return serverConsultation;
       }
@@ -339,8 +346,8 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
       const supabaseConsultation = await createSupabaseConsultation(serverInput, nextId);
 
       if (supabaseConsultation) {
+        writeStoredConsultations(upsertConsultation(currentConsultations, supabaseConsultation));
         setServerConsultations((current) => upsertConsultation(current ?? [], supabaseConsultation));
-        window.dispatchEvent(new Event(consultationStorageChangedEvent));
 
         return supabaseConsultation;
       }
@@ -353,7 +360,7 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
       id: nextId,
     };
 
-    writeStoredConsultations([...currentConsultations, consultation]);
+    writeStoredConsultations(upsertConsultation(currentConsultations, consultation));
 
     return consultation;
   }, []);

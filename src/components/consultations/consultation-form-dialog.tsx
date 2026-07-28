@@ -1,6 +1,6 @@
 "use client";
 
-import { Save, Search, X } from "lucide-react";
+import { LoaderCircle, Save, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAdminSettings } from "@/hooks/use-admin-settings";
 import { optionGroupConfigs, type OptionGroupKey } from "@/lib/admin-settings";
@@ -543,6 +543,7 @@ export function ConsultationFormDialog({
   const [formState, setFormState] = useState<FormState>(() =>
     createFormState({ consultation, enabledOptions, initialValues, mode }),
   );
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const initialBoundDentwebPatient = useMemo<DentwebSnapshotPatient | null>(() => {
     if (initialDentwebPatient) {
       return initialDentwebPatient;
@@ -924,7 +925,7 @@ export function ConsultationFormDialog({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-ink/35 p-4 backdrop-blur-sm"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
+        if (!isSubmitting && event.target === event.currentTarget) {
           onClose();
         }
       }}
@@ -946,6 +947,7 @@ export function ConsultationFormDialog({
             type="button"
             aria-label="닫기"
             onClick={onClose}
+            disabled={isSubmitting}
             className="grid h-10 w-10 place-items-center rounded-md border border-pebble text-slate transition hover:border-monday-violet hover:text-monday-violet"
           >
             <X className="h-5 w-5" aria-hidden />
@@ -956,35 +958,44 @@ export function ConsultationFormDialog({
           className="space-y-5 px-5 py-5 sm:px-6"
           onSubmit={async (event) => {
             event.preventDefault();
+            if (isSubmitting) {
+              return;
+            }
+
             const visitChannel = getAllowedVisitChannel(
               formState.patientType,
               formState.visitChannel,
               enabledOptions.visitChannels,
             );
 
-            await onSubmit({
-              clinicId: consultation?.clinicId ?? activeClinic.id,
-              clinicName: consultation?.clinicName ?? activeClinic.name,
-              date: formState.date,
-              dentwebPatientId: dentwebPatientId || undefined,
-              patientName: formState.patientName.trim(),
-              chartNo: formState.chartNo.trim(),
-              patientType: toPatientType(formState.patientType),
-              counselor: formState.counselor,
-              doctor: formState.doctor,
-              visitChannel,
-              treatmentCategory: formState.treatmentCategory,
-              consultedTeeth: parseNumberInput(formState.consultedTeeth),
-              agreedTeeth: parseNumberInput(formState.agreedTeeth),
-              result: toConsultationResult(formState.result),
-              consultationAmount: parseNumberInput(formState.consultationAmount),
-              agreedAmount: parseNumberInput(formState.agreedAmount),
-              disagreementReason:
-                formState.disagreementReason && formState.disagreementReason !== "선택 안함"
-                  ? formState.disagreementReason
-                  : undefined,
-              memo: formState.memo.trim() || undefined,
-            });
+            setIsSubmitting(true);
+            try {
+              await onSubmit({
+                clinicId: consultation?.clinicId ?? activeClinic.id,
+                clinicName: consultation?.clinicName ?? activeClinic.name,
+                date: formState.date,
+                dentwebPatientId: dentwebPatientId || undefined,
+                patientName: formState.patientName.trim(),
+                chartNo: formState.chartNo.trim(),
+                patientType: toPatientType(formState.patientType),
+                counselor: formState.counselor,
+                doctor: formState.doctor,
+                visitChannel,
+                treatmentCategory: formState.treatmentCategory,
+                consultedTeeth: parseNumberInput(formState.consultedTeeth),
+                agreedTeeth: parseNumberInput(formState.agreedTeeth),
+                result: toConsultationResult(formState.result),
+                consultationAmount: parseNumberInput(formState.consultationAmount),
+                agreedAmount: parseNumberInput(formState.agreedAmount),
+                disagreementReason:
+                  formState.disagreementReason && formState.disagreementReason !== "선택 안함"
+                    ? formState.disagreementReason
+                    : undefined,
+                memo: formState.memo.trim() || undefined,
+              });
+            } finally {
+              setIsSubmitting(false);
+            }
           }}
         >
           {saveErrorMessage ? (
@@ -1305,16 +1316,18 @@ export function ConsultationFormDialog({
             <button
               type="button"
               onClick={onClose}
+              disabled={isSubmitting}
               className="inline-flex h-11 items-center justify-center rounded-md border border-pebble px-5 text-sm font-bold text-slate transition hover:border-monday-violet hover:text-monday-violet"
             >
               취소
             </button>
             <button
               type="submit"
+              disabled={isSubmitting}
               className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-monday-violet px-5 text-sm font-bold text-white transition hover:brightness-95"
             >
-              <Save className="h-4 w-4" aria-hidden />
-              {submitLabel}
+              {isSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : <Save className="h-4 w-4" aria-hidden />}
+              {isSubmitting ? (submitLabel === "등록" ? "등록 중..." : "저장 중...") : submitLabel}
             </button>
           </div>
         </form>

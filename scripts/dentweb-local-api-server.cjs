@@ -4537,7 +4537,14 @@ async function syncPendingSupabaseJobs(config, limit = 20) {
 async function queueAndSyncConsultation(db, config, operation, consultation) {
   queueSupabaseConsultationSync(db, operation, consultation);
 
-  return syncPendingSupabaseJobs(config, 20);
+  // A CRM write must return as soon as it is safely stored in the central local DB.
+  // Supabase synchronization is retried in the background, so a slow internet connection
+  // never makes the consultation registration look like it failed.
+  void syncPendingSupabaseJobs(config, 20).catch((syncError) => {
+    console.error("Consultation Supabase sync failed:", syncError);
+  });
+
+  return { ok: true, queued: true };
 }
 
 function insertConsultation(db, consultation) {
