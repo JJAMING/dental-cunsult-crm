@@ -156,6 +156,68 @@ export type DentwebTreatmentFeesResponse = {
   fees?: DentwebTreatmentFee[];
 };
 
+export type DentwebSyncRun = {
+  errorMessage?: string;
+  finishedAt?: string;
+  id?: string;
+  readOnly?: boolean;
+  startedAt?: string;
+  status?: string;
+  summary?: {
+    appointments?: number;
+    patients?: number;
+    sourceFiles?: string[];
+    sourcePath?: string;
+    syncedAt?: string;
+  } | null;
+};
+
+export type DentwebSyncStatusResponse = {
+  checkedAt?: string;
+  db?: {
+    exists?: boolean;
+    modifiedAt?: string | null;
+    path?: string;
+    schemaVersion?: number;
+    size?: number;
+    storageMode?: string;
+  };
+  lastSyncRun?: DentwebSyncRun | null;
+  message?: string;
+  ok: boolean;
+  rowCounts?: Record<string, number>;
+  sourcePath?: string;
+};
+
+export type DentwebIntegrationStatusResponse = {
+  adapterId?: string | null;
+  checkedAt?: string;
+  message?: string;
+  ok: boolean;
+  readyToSync?: boolean;
+  sourcePath?: string | null;
+  status?: string;
+};
+
+export type DentwebOperationalStatus = {
+  health: {
+    clinicName?: string;
+    ok?: boolean;
+    timestamp?: string;
+    uptimeSeconds?: number;
+  };
+  integration: DentwebIntegrationStatusResponse;
+  sync: DentwebSyncStatusResponse;
+};
+
+export type DentwebSqlServerConnectionTestResponse = {
+  checkedAt?: string;
+  message?: string;
+  ok: boolean;
+  readOnly?: boolean;
+  source?: string | null;
+};
+
 export type DentwebReceptionPatient = {
   age?: number | null;
   birthDate?: string;
@@ -503,6 +565,30 @@ export async function checkLocalApiConnection() {
   }
 
   return readLocalApiRuntimeStatus();
+}
+
+export async function loadDentwebOperationalStatus(): Promise<DentwebOperationalStatus> {
+  const [health, integration, sync] = await Promise.all([
+    fetchLocalApiJson<DentwebOperationalStatus["health"]>("/health"),
+    fetchLocalApiJson<DentwebIntegrationStatusResponse>("/dentweb/integration-status"),
+    fetchLocalApiJson<DentwebSyncStatusResponse>("/dentweb/sync-status"),
+  ]);
+
+  return { health, integration, sync };
+}
+
+export async function runDentwebSyncNow(): Promise<DentwebSyncStatusResponse> {
+  return fetchLocalApiJson<DentwebSyncStatusResponse>("/dentweb/sync-now", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function testDentwebSqlServerConnection(): Promise<DentwebSqlServerConnectionTestResponse> {
+  return fetchLocalApiJson<DentwebSqlServerConnectionTestResponse>("/dentweb/sql-server-connection-test", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 export function getActiveLocalApiClinic() {

@@ -33,22 +33,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     (path) => pathname === path || pathname.startsWith(`${path}/`),
   );
   const isDashboard = pathname === "/dashboard";
-  const localApiStatusLabel =
-    localApiStatus.state === "connected"
-      ? "서버 저장"
-      : localApiStatus.state === "unauthorized"
-        ? "승인 필요"
-        : localApiStatus.state === "fallback"
-          ? "로컬 백업"
-          : "확인 전";
-  const localApiStatusClass =
-    localApiStatus.state === "connected"
-      ? "border-[#b7edc4] bg-[#f0fff4] text-[#146c2e]"
-      : localApiStatus.state === "unauthorized"
-        ? "border-[#ffd0d0] bg-[#fff5f5] text-[#ad1f3d]"
-        : localApiStatus.state === "fallback"
-          ? "border-[#ffe1b8] bg-[#fff7ed] text-[#a85b15]"
-          : "border-pebble bg-cloud text-slate";
+  const isDentwebConnected = localApiStatus.state === "connected";
+  const dentwebConnectionLabel = isDentwebConnected
+    ? `덴트웹 연결됨${localApiStatus.checkedAt ? ` · 마지막 확인 ${new Date(localApiStatus.checkedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}` : ""}`
+    : "덴트웹 연결 안 됨 · 관리자모드에서 서버 연결을 확인해주세요.";
+  const dentwebConnectionDotClass = isDentwebConnected ? "bg-[#29a35a]" : "bg-[#e5484d]";
 
   return (
     <div className="min-h-screen bg-cloud text-ink">
@@ -59,7 +48,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </span>
           <span className="min-w-0">
             <span className="block whitespace-nowrap text-sm font-bold text-ink">Dental Consult CRM</span>
-            <span className="block truncate text-xs font-medium text-slate">{activeClinic.name}</span>
+            <span className="flex items-center gap-1.5 truncate text-xs font-medium text-slate" title={dentwebConnectionLabel}>
+              <span
+                className={`h-2 w-2 shrink-0 rounded-full ring-2 ring-white ${dentwebConnectionDotClass}`}
+                aria-label={dentwebConnectionLabel}
+              />
+              <span className="truncate">{activeClinic.name}</span>
+            </span>
           </span>
         </Link>
 
@@ -85,19 +80,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-
-        <div className={`absolute bottom-36 left-5 right-5 rounded-[18px] border px-4 py-3 ${localApiStatusClass}`}>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-bold">저장소 상태</span>
-            <span className="rounded-full bg-white/70 px-2 py-0.5 text-xs font-bold">{localApiStatusLabel}</span>
-          </div>
-          <p className="mt-2 line-clamp-2 text-xs font-bold leading-5">{localApiStatus.message}</p>
-          {localApiStatus.baseUrl ? (
-            <p className="metric-number mt-1 truncate text-[11px] font-bold opacity-80">
-              {localApiStatus.baseUrl}
-            </p>
-          ) : null}
-        </div>
 
         <form action={signOutAction} className="absolute bottom-20 left-5 right-5">
           <button
@@ -132,7 +114,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </span>
               <span className="min-w-0">
                 <span className="block truncate text-sm font-bold">Dental Consult CRM</span>
-                <span className="block truncate text-xs font-medium text-slate">{activeClinic.name}</span>
+                <span className="flex items-center gap-1.5 truncate text-xs font-medium text-slate" title={dentwebConnectionLabel}>
+                  <span
+                    className={`h-2 w-2 shrink-0 rounded-full ring-2 ring-white ${dentwebConnectionDotClass}`}
+                    aria-label={dentwebConnectionLabel}
+                  />
+                  <span className="truncate">{activeClinic.name}</span>
+                </span>
               </span>
             </div>
 
@@ -174,13 +162,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </Link>
               );
             })}
-          </div>
-          <div className={`mt-2 rounded-2xl border px-3 py-2 lg:hidden ${localApiStatusClass}`}>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-bold">저장소 상태</span>
-              <span className="rounded-full bg-white/70 px-2 py-0.5 text-xs font-bold">{localApiStatusLabel}</span>
-            </div>
-            <p className="mt-1 text-xs font-bold leading-5">{localApiStatus.message}</p>
           </div>
           <form action={signOutAction} className="mt-2 lg:hidden">
             <button

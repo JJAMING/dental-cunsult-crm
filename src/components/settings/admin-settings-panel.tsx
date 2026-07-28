@@ -35,6 +35,7 @@ import {
   type RecommendationPhrases,
 } from "@/lib/admin-settings";
 import { formatCurrency, formatNumber } from "@/lib/format";
+import { ServerOperationsCard } from "@/components/settings/server-operations-card";
 import {
   getLocalApiDeviceId,
   saveLocalApiClientCredentials,
@@ -3981,6 +3982,8 @@ export function AdminSettingsPanel() {
           </div>
         </SettingsHubCard>
       </section>
+
+      <ServerOperationsCard />
 
       {activePanel === "dashboard" ? (
         <DashboardSettingsModal
