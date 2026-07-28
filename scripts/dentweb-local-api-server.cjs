@@ -750,6 +750,100 @@ function mapDentwebAppointmentStatus(value) {
   return labels[status] || "";
 }
 
+function parseDentwebPatientId(value) {
+  const normalized = normalizeSearchText(value);
+
+  if (!normalized) {
+    return null;
+  }
+
+  const candidate = normalized.includes(":") ? normalized.split(":").at(-1) : normalized;
+  const patientId = Number(candidate);
+
+  return Number.isInteger(patientId) ? patientId : null;
+}
+
+function dedupeDentwebAppointments(appointments) {
+  const seenKeys = new Set();
+
+  return appointments.filter((appointment) => {
+    const key = [appointment.patientId || appointment.chartNo, appointment.appointmentDate, appointment.appointmentTime]
+      .map((value) => String(value || ""))
+      .join(":");
+
+    if (seenKeys.has(key)) {
+      return false;
+    }
+
+    seenKeys.add(key);
+    return true;
+  });
+}
+
+async function queryDentwebPatientAppointmentsLive(config, input = {}) {
+  const patientId = parseDentwebPatientId(input.patientId || input.id);
+  const chartNo = normalizeSearchText(input.chartNo || input.chart_no);
+  const limit = clampLimit(input.limit, 10, 50);
+
+  if (patientId === null && !chartNo) {
+    return null;
+  }
+
+  return withDentwebSqlServer(config, async ({ sql, pool }) => {
+    const request = pool.request().input("limit", sql.Int, limit);
+    let whereClause = "";
+
+    if (patientId !== null) {
+      request.input("patientId", sql.Int, patientId);
+      whereClause = "appointment.[n환자ID] = @patientId";
+    } else {
+      request.input("chartNo", sql.VarChar(30), chartNo);
+      whereClause = "patient.[sz차트번호] = @chartNo";
+    }
+
+    const result = await request.query(`
+      SELECT TOP (@limit)
+        appointment.[n환자ID] AS [patientId],
+        patient.[sz차트번호] AS [chartNo],
+        COALESCE(NULLIF(patient.[sz이름], ''), appointment.[sz이름]) AS [patientName],
+        appointment.[sz예약시각] AS [appointmentDateTime],
+        appointment.[n이행현황] AS [statusCode],
+        appointment.[sz예약내용] AS [appointmentNote],
+        appointment.[sz메모] AS [memo],
+        doctor.[sz이름] AS [doctor]
+      FROM [dbo].[PUB_V예약정보] AS appointment
+      LEFT JOIN [dbo].[PUB_V환자정보] AS patient
+        ON patient.[n환자ID] = appointment.[n환자ID]
+      LEFT JOIN [dbo].[PUB_V직원정보] AS doctor
+        ON doctor.[nID] = appointment.[n담당의사]
+      WHERE ${whereClause}
+      ORDER BY appointment.[sz예약시각] DESC;
+    `);
+
+    const appointments = dedupeDentwebAppointments(
+      result.recordset.map((row, index) => ({
+        id: `live:${normalizeMappedValue(row.patientId)}:${normalizeMappedValue(row.appointmentDateTime)}:${index}`,
+        patientId: normalizeMappedValue(row.patientId),
+        chartNo: normalizeMappedValue(row.chartNo),
+        patientName: normalizeMappedValue(row.patientName),
+        appointmentDate: formatDentwebAppointmentDate(row.appointmentDateTime),
+        appointmentTime: formatDentwebAppointmentTime(row.appointmentDateTime),
+        doctor: normalizeMappedValue(row.doctor),
+        status: mapDentwebAppointmentStatus(row.statusCode),
+        appointmentNote: normalizeMappedValue(row.appointmentNote),
+        memo: normalizeMappedValue(row.memo),
+      })),
+    );
+
+    return {
+      appointments,
+      chartNo: appointments[0]?.chartNo || chartNo,
+      patientId: patientId ?? null,
+      patientName: appointments[0]?.patientName || normalizeSearchText(input.patientName || input.patient_name),
+    };
+  });
+}
+
 function getKoreanDateDigits(value = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Seoul",
@@ -1039,8 +1133,8 @@ async function loadDentwebSqlServerReadOnlyAdapter(config) {
       lastVisitDate: normalizeMappedValue(row.lastVisitDate),
       doctor: normalizeMappedValue(row.doctor),
     }));
-    const appointments = appointmentResult.recordset.map((row, index) => ({
-      sourceId: `${normalizeMappedValue(row.patientId)}:${normalizeMappedValue(row.appointmentDateTime)}:${index}`,
+    const appointments = appointmentResult.recordset.map((row) => ({
+      sourceId: `${normalizeMappedValue(row.patientId)}:${normalizeMappedValue(row.appointmentDateTime)}`,
       chartNo: normalizeMappedValue(row.chartNo),
       patientName: normalizeMappedValue(row.patientName),
       appointmentDate: formatDentwebAppointmentDate(row.appointmentDateTime),
@@ -2567,7 +2661,7 @@ function normalizeDentwebPatientSnapshot(patient, config, index) {
   };
 }
 
-function normalizeDentwebAppointmentSnapshot(appointment, config, index) {
+function normalizeDentwebAppointmentSnapshot(appointment, config) {
   const chartNo = pickText(appointment, ["chartNo", "chart_no", "chartNumber", "patientNo", "PatientNo"]);
   const patientName = pickText(appointment, ["patientName", "patient_name", "name", "Name"]);
   const appointmentDate = pickText(appointment, [
@@ -2577,14 +2671,17 @@ function normalizeDentwebAppointmentSnapshot(appointment, config, index) {
     "date",
     "Date",
   ]);
+  const appointmentTime = pickText(appointment, ["appointmentTime", "appointment_time", "reservationTime", "time", "Time"]);
+  const sourcePatientId = pickText(appointment, ["patientId", "patient_id", "sourcePatientId"]);
+  const stableSourceId = `${sourcePatientId || chartNo}:${appointmentDate}:${appointmentTime}`;
   const sourceId = pickText(
     appointment,
     ["id", "appointmentId", "appointment_id", "reservationId", "sourceId"],
-    `${chartNo}:${appointmentDate}:${index}`,
+    stableSourceId,
   );
   const fallbackId = crypto
     .createHash("sha1")
-    .update(`${config.clinicId}:appointment:${chartNo}:${appointmentDate}:${patientName}:${index}`)
+    .update(`${config.clinicId}:appointment:${stableSourceId}:${patientName}`)
     .digest("hex");
 
   return {
@@ -2636,13 +2733,17 @@ function upsertDentwebSnapshots(db, config, adapterPayload) {
   const patients = adapterPayload.patients.map((patient, index) =>
     normalizeDentwebPatientSnapshot(patient, config, index),
   );
-  const appointments = adapterPayload.appointments.map((appointment, index) =>
-    normalizeDentwebAppointmentSnapshot(appointment, config, index),
+  const appointments = adapterPayload.appointments.map((appointment) =>
+    normalizeDentwebAppointmentSnapshot(appointment, config),
   );
 
   db.exec("BEGIN");
 
   try {
+    // Appointment snapshots are an expendable read-only cache. Replacing the
+    // clinic slice removes stale copies left by older unstable snapshot IDs.
+    db.prepare("DELETE FROM dentweb_appointments_snapshot WHERE clinic_id = ?").run(config.clinicId);
+
     const patientStatement = db.prepare(`
       INSERT INTO dentweb_patients_snapshot (
         id,
@@ -2935,7 +3036,7 @@ function buildDentwebPatientSearchPayload(config, input = {}) {
   };
 }
 
-function buildDentwebPatientAppointmentsPayload(config, input = {}) {
+function buildDentwebPatientAppointmentsSnapshotPayload(config, input = {}) {
   const { db, error } = getLocalDb(config);
   const clinicId = normalizeClinicId(input.clinicId, config);
   const patientId = normalizeSearchText(input.patientId || input.id);
@@ -2978,6 +3079,7 @@ function buildDentwebPatientAppointmentsPayload(config, input = {}) {
   return {
     ok: true,
     readOnly: true,
+    source: "snapshot",
     clinicId,
     patientId: patientId || null,
     chartNo: target.chart_no || "",
@@ -2989,6 +3091,38 @@ function buildDentwebPatientAppointmentsPayload(config, input = {}) {
       : "No appointment snapshots were found for this patient.",
     checkedAt: new Date().toISOString(),
   };
+}
+
+async function buildDentwebPatientAppointmentsPayload(config, input = {}) {
+  const clinicId = normalizeClinicId(input.clinicId, config);
+
+  if (getDentwebSqlServerConfig(config)) {
+    try {
+      const liveResult = await queryDentwebPatientAppointmentsLive(config, input);
+
+      if (liveResult) {
+        return {
+          ok: true,
+          readOnly: true,
+          source: "dentweb_live",
+          clinicId,
+          patientId: liveResult.patientId,
+          chartNo: liveResult.chartNo,
+          patientName: liveResult.patientName,
+          count: liveResult.appointments.length,
+          appointments: liveResult.appointments,
+          message: liveResult.appointments.length
+            ? "Dentweb appointment history was loaded directly from the read-only source."
+            : "No appointment history was found in the Dentweb read-only source.",
+          checkedAt: new Date().toISOString(),
+        };
+      }
+    } catch {
+      // The snapshot cache below is used only when the read-only source is temporarily unavailable.
+    }
+  }
+
+  return buildDentwebPatientAppointmentsSnapshotPayload(config, input);
 }
 
 function buildDentwebSourceMappingPayload(config) {
@@ -4871,7 +5005,7 @@ async function handleDentwebPatientSearch(request, response, requestUrl, config)
 
 async function handleDentwebPatientAppointments(request, response, requestUrl, config) {
   const body = request.method === "POST" ? await readJsonBody(request) : {};
-  const payload = buildDentwebPatientAppointmentsPayload(config, {
+  const payload = await buildDentwebPatientAppointmentsPayload(config, {
     ...body,
     chartNo: body.chartNo ?? requestUrl.searchParams.get("chartNo"),
     clinicId: body.clinicId ?? requestUrl.searchParams.get("clinicId"),

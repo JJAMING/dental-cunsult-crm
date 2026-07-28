@@ -51,6 +51,7 @@ export type DentwebSnapshotAppointment = {
   doctor?: string;
   id?: number | string;
   memo?: string;
+  patientId?: number | string;
   patientName?: string;
   status?: string;
   syncedAt?: string;
@@ -97,6 +98,7 @@ export type DentwebPatientAppointmentsResponse = {
   patientId?: number | string | null;
   patientName?: string;
   readOnly?: boolean;
+  source?: "dentweb_live" | "snapshot";
 };
 
 export type DentwebReceptionPatient = {

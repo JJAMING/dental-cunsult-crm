@@ -240,6 +240,7 @@ function ReceptionDetailDialog({
   const [snapshotPatient, setSnapshotPatient] = useState<DentwebSnapshotPatient | null>(null);
   const [snapshotAppointments, setSnapshotAppointments] = useState<DentwebSnapshotAppointment[]>([]);
   const [snapshotStatus, setSnapshotStatus] = useState<"loading" | "success" | "empty" | "error">("empty");
+  const [appointmentSource, setAppointmentSource] = useState<"dentweb_live" | "snapshot" | null>(null);
 
   useEffect(() => {
     let isCurrent = true;
@@ -255,20 +256,21 @@ function ReceptionDetailDialog({
       setSnapshotStatus("loading");
       setSnapshotPatient(null);
       setSnapshotAppointments([]);
+      setAppointmentSource(null);
 
       try {
-        const searchResult = await searchDentwebPatients({ clinicId, limit: 10, query });
-        const matchedPatient =
-          searchResult.patients?.find((candidate) => candidate.chartNo === patient.chartNo) ??
-          searchResult.patients?.find((candidate) => candidate.patientName === patient.patientName) ??
-          null;
         const appointmentResult = await loadDentwebPatientAppointments({
-          chartNo: matchedPatient?.chartNo ?? patient.chartNo,
+          chartNo: patient.chartNo,
           clinicId,
-          limit: 6,
-          patientId: matchedPatient?.id ?? patient.patientId,
-          patientName: matchedPatient?.patientName ?? patient.patientName,
+          limit: 20,
+          patientId: patient.patientId,
+          patientName: patient.patientName,
         });
+        const searchResult = await searchDentwebPatients({ clinicId, limit: 10, query }).catch(() => null);
+        const matchedPatient =
+          searchResult?.patients?.find((candidate) => candidate.chartNo === patient.chartNo) ??
+          searchResult?.patients?.find((candidate) => candidate.patientName === patient.patientName) ??
+          null;
 
         if (!isCurrent) {
           return;
@@ -277,6 +279,7 @@ function ReceptionDetailDialog({
         const appointments = appointmentResult.appointments ?? matchedPatient?.appointments ?? [];
         setSnapshotPatient(matchedPatient);
         setSnapshotAppointments(appointments);
+        setAppointmentSource(appointmentResult.source ?? "snapshot");
         setSnapshotStatus(matchedPatient || appointments.length ? "success" : "empty");
       } catch {
         if (isCurrent) {
@@ -351,7 +354,9 @@ function ReceptionDetailDialog({
                   ? "불러오는 중"
                   : snapshotStatus === "error"
                     ? "불러오지 못함"
-                    : `${snapshotAppointments.length}건`}
+                    : appointmentSource === "dentweb_live"
+                      ? `덴트웹 실시간 · ${snapshotAppointments.length}건`
+                      : `${snapshotAppointments.length}건 · 최근 동기화본`}
               </p>
             </div>
             {snapshotPatient?.memo ? (
