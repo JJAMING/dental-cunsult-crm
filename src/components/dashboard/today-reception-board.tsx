@@ -3,8 +3,12 @@
 import { ClipboardList, RefreshCw, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  loadDentwebPatientAppointments,
   loadDentwebTodayReception,
+  searchDentwebPatients,
   type DentwebReceptionPatient,
+  type DentwebSnapshotAppointment,
+  type DentwebSnapshotPatient,
 } from "@/lib/local-api-client";
 
 type StatusFilter = "all" | 0 | 1 | 2 | 3 | 4;
@@ -101,6 +105,39 @@ function formatPhone(value?: string) {
   return value || "-";
 }
 
+function formatSnapshotAppointment(appointment: DentwebSnapshotAppointment) {
+  const dateDigits = String(appointment.appointmentDate ?? "").replace(/\D/g, "");
+  const timeDigits = String(appointment.appointmentTime ?? "").replace(/\D/g, "");
+  const dateText = (() => {
+    if (dateDigits.length !== 8) {
+      return appointment.appointmentDate || "";
+    }
+
+    const year = Number(dateDigits.slice(0, 4));
+    const month = Number(dateDigits.slice(4, 6));
+    const day = Number(dateDigits.slice(6, 8));
+    const date = new Date(year, month - 1, day);
+    const weekday = ["일", "월", "화", "수", "목", "금", "토"][date.getDay()];
+
+    return Number.isNaN(date.getTime())
+      ? appointment.appointmentDate || ""
+      : `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}(${weekday})`;
+  })();
+  const timeText = (() => {
+    if (!timeDigits) {
+      return "";
+    }
+
+    const normalized = timeDigits.padStart(4, "0").slice(-4);
+    const hour = Number(normalized.slice(0, 2));
+    const minute = Number(normalized.slice(2, 4));
+
+    return hour <= 23 && minute <= 59 ? `${hour}시 ${String(minute).padStart(2, "0")}분` : appointment.appointmentTime || "";
+  })();
+
+  return [dateText, timeText].filter(Boolean).join(" ");
+}
+
 function StatusBadge({ patient }: { patient: DentwebReceptionPatient }) {
   return (
     <span
@@ -192,12 +229,69 @@ function ReceptionTable({
 }
 
 function ReceptionDetailDialog({
+  clinicId,
   patient,
   onClose,
 }: {
+  clinicId: string;
   patient: DentwebReceptionPatient;
   onClose: () => void;
 }) {
+  const [snapshotPatient, setSnapshotPatient] = useState<DentwebSnapshotPatient | null>(null);
+  const [snapshotAppointments, setSnapshotAppointments] = useState<DentwebSnapshotAppointment[]>([]);
+  const [snapshotStatus, setSnapshotStatus] = useState<"loading" | "success" | "empty" | "error">("empty");
+
+  useEffect(() => {
+    let isCurrent = true;
+    const query = (patient.chartNo || patient.patientName || "").trim();
+
+    if (!query) {
+      return () => {
+        isCurrent = false;
+      };
+    }
+
+    const loadSnapshot = async () => {
+      setSnapshotStatus("loading");
+      setSnapshotPatient(null);
+      setSnapshotAppointments([]);
+
+      try {
+        const searchResult = await searchDentwebPatients({ clinicId, limit: 10, query });
+        const matchedPatient =
+          searchResult.patients?.find((candidate) => candidate.chartNo === patient.chartNo) ??
+          searchResult.patients?.find((candidate) => candidate.patientName === patient.patientName) ??
+          null;
+        const appointmentResult = await loadDentwebPatientAppointments({
+          chartNo: matchedPatient?.chartNo ?? patient.chartNo,
+          clinicId,
+          limit: 6,
+          patientId: matchedPatient?.id ?? patient.patientId,
+          patientName: matchedPatient?.patientName ?? patient.patientName,
+        });
+
+        if (!isCurrent) {
+          return;
+        }
+
+        const appointments = appointmentResult.appointments ?? matchedPatient?.appointments ?? [];
+        setSnapshotPatient(matchedPatient);
+        setSnapshotAppointments(appointments);
+        setSnapshotStatus(matchedPatient || appointments.length ? "success" : "empty");
+      } catch {
+        if (isCurrent) {
+          setSnapshotStatus("error");
+        }
+      }
+    };
+
+    void loadSnapshot();
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [clinicId, patient.chartNo, patient.patientId, patient.patientName]);
+
   const detailRows: Array<[string, string]> = [
     ["차트번호", patient.chartNo || "-"],
     ["연령/성별", `${patient.age === null || patient.age === undefined ? "-" : `${patient.age}세`} · ${patient.gender === "female" ? "여" : patient.gender === "male" ? "남" : "-"}`],
@@ -248,6 +342,42 @@ function ReceptionDetailDialog({
             <p className="mt-1 min-h-16 whitespace-pre-wrap rounded-md bg-cloud px-3 py-3 text-sm leading-6 text-ink">
               {patient.detail || "등록된 접수 또는 예약 내용이 없습니다."}
             </p>
+          </div>
+          <div className="sm:col-span-2 rounded-lg border border-pebble bg-fog px-4 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-bold text-ink">덴트웹 예약 이력</p>
+              <p className="text-xs font-bold text-slate">
+                {snapshotStatus === "loading"
+                  ? "불러오는 중"
+                  : snapshotStatus === "error"
+                    ? "불러오지 못함"
+                    : `${snapshotAppointments.length}건`}
+              </p>
+            </div>
+            {snapshotPatient?.memo ? (
+              <div className="mt-3 rounded-md bg-white px-3 py-2 text-xs leading-5 text-slate">
+                <p className="font-bold text-ink">환자 메모</p>
+                <p className="mt-1 whitespace-pre-wrap">{snapshotPatient.memo}</p>
+              </div>
+            ) : null}
+            {snapshotAppointments.length ? (
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {snapshotAppointments.map((appointment, index) => (
+                  <div
+                    key={`${appointment.id ?? appointment.appointmentDate ?? "appointment"}-${index}`}
+                    className="rounded-md border border-mist bg-white px-3 py-2 text-xs text-slate"
+                  >
+                    <p className="font-bold text-ink">{formatSnapshotAppointment(appointment) || "예약 정보 없음"}</p>
+                    <p className="mt-1">{[appointment.doctor ? `Dr. ${appointment.doctor}` : "", appointment.status].filter(Boolean).join(" · ") || "예약 상태 정보 없음"}</p>
+                    {appointment.memo ? <p className="mt-1 line-clamp-2 text-iron">{appointment.memo}</p> : null}
+                  </div>
+                ))}
+              </div>
+            ) : snapshotStatus === "empty" ? (
+              <p className="mt-3 text-xs font-bold text-slate">표시할 덴트웹 예약 이력이 없습니다.</p>
+            ) : snapshotStatus === "error" ? (
+              <p className="mt-3 text-xs font-bold text-[#b94b10]">서버 연결을 확인한 뒤 다시 열어 주세요.</p>
+            ) : null}
           </div>
         </div>
       </section>
@@ -503,7 +633,14 @@ export function TodayReceptionBoard({
           onConsult={openConsultation}
         />
       ) : null}
-      {selectedPatient ? <ReceptionDetailDialog patient={selectedPatient} onClose={() => setSelectedPatient(null)} /> : null}
+      {selectedPatient ? (
+        <ReceptionDetailDialog
+          key={`${selectedPatient.patientId ?? selectedPatient.chartNo ?? selectedPatient.sequence}`}
+          clinicId={clinicId}
+          patient={selectedPatient}
+          onClose={() => setSelectedPatient(null)}
+        />
+      ) : null}
     </section>
   );
 }
