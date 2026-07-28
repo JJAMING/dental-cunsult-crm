@@ -1,11 +1,12 @@
 "use client";
 
-import { ChevronDown, Filter, Pencil, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, Filter, Pencil, Plus, ReceiptText, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ConsultationFormDialog,
   type ConsultationFormInput,
 } from "@/components/consultations/consultation-form-dialog";
+import { DentwebPaymentComparisonDialog } from "@/components/consultations/dentweb-payment-comparison-dialog";
 import { ConsultationRegisterDialog } from "@/components/consultations/consultation-register-dialog";
 import { StatusPill } from "@/components/ui/status-pill";
 import { useAdminSettings } from "@/hooks/use-admin-settings";
@@ -289,6 +290,7 @@ export function ConsultationsWorkspace() {
   const [columnFilters, setColumnFilters] = useState<ColumnFilters>(emptyColumnFilters);
   const [currentPage, setCurrentPage] = useState(1);
   const [saveErrorMessage, setSaveErrorMessage] = useState("");
+  const [isDentwebPaymentComparisonOpen, setIsDentwebPaymentComparisonOpen] = useState(false);
   const weekOptions = useMemo(
     () => getWeekOptions(selectedYear, selectedMonth),
     [selectedMonth, selectedYear],
@@ -518,7 +520,18 @@ export function ConsultationsWorkspace() {
             신규 상담은 팝업으로 등록하고, 일지 목록은 넓게 확인합니다.
           </p>
         </div>
-        <ConsultationRegisterDialog />
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsDentwebPaymentComparisonOpen(true)}
+            disabled={filteredConsultations.length === 0}
+            className="inline-flex h-11 items-center gap-2 rounded-full border border-monday-violet bg-white px-4 text-sm font-bold text-monday-violet transition hover:bg-periwinkle disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            <ReceiptText className="h-4 w-4" aria-hidden />
+            덴트웹 수납내역
+          </button>
+          <ConsultationRegisterDialog />
+        </div>
       </section>
 
       {saveErrorMessage ? (
@@ -897,6 +910,15 @@ export function ConsultationsWorkspace() {
           }}
           onSubmit={handleTreatmentPlanSubmit}
           saveErrorMessage={saveErrorMessage}
+        />
+      ) : null}
+
+      {isDentwebPaymentComparisonOpen ? (
+        <DentwebPaymentComparisonDialog
+          key={filteredConsultations.map((consultation) => consultation.id).join(",")}
+          clinicId={activeClinic.id}
+          consultations={filteredConsultations}
+          onClose={() => setIsDentwebPaymentComparisonOpen(false)}
         />
       ) : null}
     </div>

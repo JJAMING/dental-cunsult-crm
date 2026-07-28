@@ -27,7 +27,7 @@ import { useConsultations } from "@/hooks/use-consultations";
 import { useRecallRecords } from "@/hooks/use-recall-records";
 import type { RecallRecord } from "@/hooks/use-recall-records";
 import { getDashboardGoalForMonth } from "@/lib/admin-settings";
-import type { DentwebReceptionPatient } from "@/lib/local-api-client";
+import type { DentwebReceptionPatient, DentwebSnapshotPatient } from "@/lib/local-api-client";
 import {
   buildOpportunityRadarRows,
   findLowConsentSegment,
@@ -1083,6 +1083,22 @@ export function DashboardWorkspace() {
           key={`${consultationPatient.patientId}-${consultationPatient.chartNo}-${consultationPatient.receptionAt}`}
           title="신규 상담 등록"
           submitLabel="등록"
+          initialDentwebPatient={{
+            chartNo: consultationPatient.chartNo,
+            gender: consultationPatient.gender,
+            id: consultationPatient.patientId,
+            latestAppointment: {
+              appointmentDate: consultationPatient.receptionAt?.slice(0, 8),
+              appointmentNote: consultationPatient.detail,
+              appointmentTime: consultationPatient.reservationTime,
+              doctor: consultationPatient.doctor,
+              patientId: consultationPatient.patientId,
+              patientName: consultationPatient.patientName,
+              status: consultationPatient.statusLabel,
+            },
+            patientName: consultationPatient.patientName,
+            phone: consultationPatient.phone,
+          } satisfies DentwebSnapshotPatient}
           initialValues={{
             date: toConsultationDate(consultationPatient.receptionAt),
             dentwebPatientId: consultationPatient.patientId === undefined ? undefined : String(consultationPatient.patientId),

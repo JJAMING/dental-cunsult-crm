@@ -1,6 +1,6 @@
 "use client";
 
-import { ClipboardList, RefreshCw, X } from "lucide-react";
+import { ClipboardList, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   loadDentwebPatientAppointments,
@@ -148,6 +148,31 @@ function StatusBadge({ patient }: { patient: DentwebReceptionPatient }) {
       {patient.statusLabel}
     </span>
   );
+}
+
+function toReceptionPatient(patient: DentwebSnapshotPatient): DentwebReceptionPatient {
+  const latestAppointment = patient.latestAppointment ?? patient.appointments?.[0];
+
+  return {
+    chartNo: patient.chartNo,
+    detail: latestAppointment?.appointmentNote ?? latestAppointment?.memo ?? patient.memo,
+    doctor: latestAppointment?.doctor,
+    gender: patient.gender === "female" || patient.gender === "true" || patient.gender === "1"
+      ? "female"
+      : patient.gender === "male" || patient.gender === "false" || patient.gender === "0"
+        ? "male"
+        : "",
+    patientId: patient.id,
+    patientName: patient.patientName,
+    patientType: "returning",
+    phone: patient.phone,
+    receptionAt: latestAppointment?.appointmentDate,
+    reservationTime: latestAppointment?.appointmentTime,
+    sequence: 0,
+    staff: "",
+    statusCode: 0,
+    statusLabel: "검색 환자",
+  };
 }
 
 function ReceptionTable({
@@ -461,9 +486,14 @@ export function TodayReceptionBoard({
   const [selectedPatient, setSelectedPatient] = useState<DentwebReceptionPatient | null>(null);
   const [isAllListOpen, setIsAllListOpen] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState("");
+  const [patientSearchQuery, setPatientSearchQuery] = useState("");
+  const [patientSearchResults, setPatientSearchResults] = useState<DentwebSnapshotPatient[]>([]);
+  const [patientSearchStatus, setPatientSearchStatus] = useState<"idle" | "loading" | "success" | "empty" | "error">("idle");
   const todayValue = useMemo(() => getTodayValue(), []);
   const requestInFlightRef = useRef(false);
   const hasReceptionDataRef = useRef(false);
+  const patientSearchRequestIdRef = useRef(0);
+  const patientSearchRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let isCurrent = true;
@@ -542,6 +572,59 @@ export function TodayReceptionBoard({
     };
   }, [clinicId, reloadKey, todayValue]);
 
+  useEffect(() => {
+    const query = patientSearchQuery.trim();
+
+    if (query.length < 2) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      const requestId = ++patientSearchRequestIdRef.current;
+      setPatientSearchStatus("loading");
+
+      void searchDentwebPatients({ clinicId, limit: 8, query })
+        .then((payload) => {
+          if (requestId !== patientSearchRequestIdRef.current) {
+            return;
+          }
+
+          const nextResults = payload.patients ?? [];
+          setPatientSearchResults(nextResults);
+          setPatientSearchStatus(nextResults.length ? "success" : "empty");
+        })
+        .catch(() => {
+          if (requestId === patientSearchRequestIdRef.current) {
+            setPatientSearchResults([]);
+            setPatientSearchStatus("error");
+          }
+        });
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [clinicId, patientSearchQuery]);
+
+  useEffect(() => {
+    if (patientSearchStatus === "idle") {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!patientSearchRef.current?.contains(event.target as Node)) {
+        setPatientSearchResults([]);
+        setPatientSearchStatus("idle");
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [patientSearchStatus]);
+
   const statusCounts = useMemo(
     () =>
       receptionStatuses.reduce<Record<number, number>>((counts, status) => {
@@ -572,10 +655,33 @@ export function TodayReceptionBoard({
     setMessage("");
     setReloadKey((current) => current + 1);
   };
+  const updatePatientSearchQuery = (value: string) => {
+    setPatientSearchQuery(value);
+
+    if (value.trim().length < 2) {
+      patientSearchRequestIdRef.current += 1;
+      setPatientSearchResults([]);
+      setPatientSearchStatus("idle");
+    }
+  };
   const openConsultation = (patient: DentwebReceptionPatient) => {
     setSelectedPatient(null);
     setIsAllListOpen(false);
     onConsult?.(patient);
+  };
+  const clearPatientSearch = () => {
+    patientSearchRequestIdRef.current += 1;
+    setPatientSearchQuery("");
+    setPatientSearchResults([]);
+    setPatientSearchStatus("idle");
+  };
+  const openSearchedPatientDetail = (patient: DentwebSnapshotPatient) => {
+    clearPatientSearch();
+    setSelectedPatient(toReceptionPatient(patient));
+  };
+  const openSearchedPatientConsultation = (patient: DentwebSnapshotPatient) => {
+    clearPatientSearch();
+    openConsultation(toReceptionPatient(patient));
   };
 
   return (
@@ -594,6 +700,70 @@ export function TodayReceptionBoard({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <div ref={patientSearchRef} className="relative">
+            <label className="flex h-9 items-center gap-2 rounded-md border border-pebble bg-white px-3 text-xs text-slate focus-within:border-monday-violet">
+              <Search className="h-3.5 w-3.5" aria-hidden />
+              <input
+                type="search"
+                value={patientSearchQuery}
+                onChange={(event) => updatePatientSearchQuery(event.target.value)}
+                placeholder="환자명·차트번호 검색"
+                className="w-36 bg-transparent font-bold text-ink outline-none placeholder:text-iron sm:w-44"
+              />
+            </label>
+            {patientSearchStatus !== "idle" ? (
+              <div className="absolute right-0 top-full z-30 mt-2 w-[min(34rem,calc(100vw-2.5rem))] overflow-hidden rounded-lg border border-pebble bg-white shadow-[0_18px_38px_rgba(28,39,66,0.18)]">
+                <div className="flex items-center justify-between gap-3 border-b border-mist bg-fog px-3 py-2">
+                  <p className="text-xs font-bold text-ink">덴트웹 환자 검색</p>
+                  <p className={`text-xs font-bold ${patientSearchStatus === "error" ? "text-red-600" : "text-slate"}`}>
+                    {patientSearchStatus === "loading"
+                      ? "검색 중"
+                      : patientSearchStatus === "success"
+                        ? `${patientSearchResults.length}명`
+                        : patientSearchStatus === "empty"
+                          ? "일치하는 환자 없음"
+                          : "서버 연결 확인 필요"}
+                  </p>
+                </div>
+                {patientSearchResults.length ? (
+                  <div className="max-h-80 overflow-y-auto p-2">
+                    {patientSearchResults.map((patient, index) => (
+                      <div
+                        key={`${patient.id ?? patient.chartNo ?? patient.patientName}-${index}`}
+                        className="mb-2 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-mist px-3 py-2.5 last:mb-0"
+                      >
+                        <div className="min-w-0">
+                          <p className="font-bold text-ink">{patient.patientName || "이름 없음"}</p>
+                          <p className="mt-1 text-xs text-slate">
+                            {patient.chartNo ? `차트 ${patient.chartNo}` : "차트번호 없음"}
+                            {patient.latestAppointment ? ` · 최근 예약 ${formatSnapshotAppointment(patient.latestAppointment)}` : ""}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openSearchedPatientDetail(patient)}
+                            className="h-8 rounded-md border border-pebble px-2.5 text-xs font-bold text-slate transition hover:border-monday-violet hover:text-monday-violet"
+                          >
+                            상세
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openSearchedPatientConsultation(patient)}
+                            className="h-8 rounded-md border border-monday-violet bg-periwinkle px-2.5 text-xs font-bold text-monday-violet transition hover:brightness-95"
+                          >
+                            상담
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : patientSearchStatus === "loading" ? (
+                  <p className="px-3 py-5 text-center text-xs font-bold text-slate">덴트웹 환자를 찾고 있습니다.</p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
           <button
             type="button"
             onClick={refreshReception}
