@@ -26,6 +26,7 @@ export type Database = {
           clinic_id: string;
           patient_id: string;
           consultation_date: string;
+          dentweb_patient_id: string | null;
           counselor_id: string | null;
           doctor_id: string | null;
           visit_channel_id: string | null;
@@ -46,6 +47,7 @@ export type Database = {
           clinic_id: string;
           patient_id: string;
           consultation_date: string;
+          dentweb_patient_id?: string | null;
           counselor_id?: string | null;
           doctor_id?: string | null;
           visit_channel_id?: string | null;
@@ -63,6 +65,7 @@ export type Database = {
         };
         Update: {
           consultation_date?: string;
+          dentweb_patient_id?: string | null;
           counselor_id?: string | null;
           doctor_id?: string | null;
           visit_channel_id?: string | null;

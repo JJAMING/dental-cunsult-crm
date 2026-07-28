@@ -35,6 +35,7 @@ type SupabaseConsultationRow = {
   consultation_amount?: number | string | null;
   consultation_date?: string | null;
   consulted_teeth_count?: number | null;
+  dentweb_patient_id?: string | null;
   disagreement_reason?: { name?: string | null } | null;
   doctor?: { name?: string | null } | null;
   memo?: string | null;
@@ -171,6 +172,7 @@ function mapSupabaseConsultation(row: SupabaseConsultationRow, clinicId: string,
     consultedTeeth: toNumber(row.consulted_teeth_count),
     counselor: toText(row.counselor?.name),
     date: toText(row.consultation_date),
+    dentwebPatientId: toText(row.dentweb_patient_id) || undefined,
     disagreementReason: toText(row.disagreement_reason?.name) || undefined,
     doctor: toText(row.doctor?.name),
     id: appRowId,
@@ -213,6 +215,7 @@ async function buildSupabaseConsultationPayload(
     consultation_amount: input.consultationAmount,
     consultation_date: input.date,
     consulted_teeth_count: input.consultedTeeth,
+    dentweb_patient_id: input.dentwebPatientId?.trim() || null,
     counselor_id: counselorId,
     disagreement_reason_id: disagreementReasonId,
     doctor_id: doctorId,
@@ -244,7 +247,7 @@ export async function readSupabaseConsultations({
   const { data, error } = await client
     .from("consultations")
     .select(
-      "app_row_id,consultation_date,consulted_teeth_count,agreed_teeth_count,result,consultation_amount,agreed_amount,memo,patient:patients(name,chart_no,patient_type),counselor:staff!consultations_counselor_id_fkey(name),doctor:staff!consultations_doctor_id_fkey(name),visit_channel:visit_channels(name),treatment_category:treatment_categories(name),disagreement_reason:disagreement_reasons(name)",
+      "app_row_id,consultation_date,dentweb_patient_id,consulted_teeth_count,agreed_teeth_count,result,consultation_amount,agreed_amount,memo,patient:patients(name,chart_no,patient_type),counselor:staff!consultations_counselor_id_fkey(name),doctor:staff!consultations_doctor_id_fkey(name),visit_channel:visit_channels(name),treatment_category:treatment_categories(name),disagreement_reason:disagreement_reasons(name)",
     )
     .eq("clinic_id", clinicUuid)
     .order("consultation_date", { ascending: false });
@@ -269,7 +272,7 @@ export async function createSupabaseConsultation(input: ConsultationInput, appRo
     .from("consultations")
     .upsert(payload, { onConflict: "clinic_id,app_row_id" })
     .select(
-      "app_row_id,consultation_date,consulted_teeth_count,agreed_teeth_count,result,consultation_amount,agreed_amount,memo,patient:patients(name,chart_no,patient_type),counselor:staff!consultations_counselor_id_fkey(name),doctor:staff!consultations_doctor_id_fkey(name),visit_channel:visit_channels(name),treatment_category:treatment_categories(name),disagreement_reason:disagreement_reasons(name)",
+      "app_row_id,consultation_date,dentweb_patient_id,consulted_teeth_count,agreed_teeth_count,result,consultation_amount,agreed_amount,memo,patient:patients(name,chart_no,patient_type),counselor:staff!consultations_counselor_id_fkey(name),doctor:staff!consultations_doctor_id_fkey(name),visit_channel:visit_channels(name),treatment_category:treatment_categories(name),disagreement_reason:disagreement_reasons(name)",
     )
     .single<SupabaseConsultationRow>();
 

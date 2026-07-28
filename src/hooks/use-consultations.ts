@@ -67,6 +67,7 @@ function normalizeConsultation(value: unknown): Consultation | null {
     clinicId: toText(item.clinicId) || undefined,
     clinicName: toText(item.clinicName) || undefined,
     date: toText(item.date),
+    dentwebPatientId: toText(item.dentwebPatientId) || undefined,
     patientName: toText(item.patientName),
     chartNo: toText(item.chartNo),
     patientType,

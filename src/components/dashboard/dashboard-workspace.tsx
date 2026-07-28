@@ -1085,6 +1085,7 @@ export function DashboardWorkspace() {
           submitLabel="등록"
           initialValues={{
             date: toConsultationDate(consultationPatient.receptionAt),
+            dentwebPatientId: consultationPatient.patientId === undefined ? undefined : String(consultationPatient.patientId),
             patientName: consultationPatient.patientName,
             chartNo: consultationPatient.chartNo,
             patientType: consultationPatient.patientType,
@@ -1153,6 +1154,10 @@ export function DashboardWorkspace() {
       <TodayReceptionBoard
         key={activeClinic.id}
         clinicId={activeClinic.id}
+        consultedChartNos={todayConsultations.map((consultation) => consultation.chartNo)}
+        consultedDentwebPatientIds={todayConsultations.flatMap((consultation) =>
+          consultation.dentwebPatientId ? [consultation.dentwebPatientId] : [],
+        )}
         onConsult={(patient) => {
           setConsultationSaveErrorMessage("");
           setConsultationPatient(patient);

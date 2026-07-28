@@ -13,6 +13,7 @@ export type Consultation = {
   clinicId?: string;
   clinicName?: string;
   date: string;
+  dentwebPatientId?: string;
   patientName: string;
   chartNo: string;
   patientType: PatientType;

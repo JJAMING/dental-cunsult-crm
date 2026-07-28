@@ -445,9 +445,13 @@ function ReceptionListDialog({
 export function TodayReceptionBoard({
   clinicId,
   onConsult,
+  consultedChartNos = [],
+  consultedDentwebPatientIds = [],
 }: {
   clinicId: string;
   onConsult?: (patient: DentwebReceptionPatient) => void;
+  consultedChartNos?: string[];
+  consultedDentwebPatientIds?: string[];
 }) {
   const [patients, setPatients] = useState<DentwebReceptionPatient[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -550,6 +554,19 @@ export function TodayReceptionBoard({
     () => (statusFilter === "all" ? patients : patients.filter((patient) => patient.statusCode === statusFilter)),
     [patients, statusFilter],
   );
+  const consultationCandidateCount = useMemo(() => {
+    const savedPatientIds = new Set(consultedDentwebPatientIds.filter(Boolean).map(String));
+    const savedChartNos = new Set(consultedChartNos.filter(Boolean));
+
+    return patients.filter((patient) => {
+      const isInConsultationFlow = [0, 1, 2].includes(patient.statusCode);
+      const isAlreadyRegistered =
+        (patient.patientId !== undefined && savedPatientIds.has(String(patient.patientId))) ||
+        (patient.chartNo && savedChartNos.has(patient.chartNo));
+
+      return isInConsultationFlow && !isAlreadyRegistered;
+    }).length;
+  }, [consultedChartNos, consultedDentwebPatientIds, patients]);
   const refreshReception = () => {
     setIsLoading(true);
     setMessage("");
@@ -621,6 +638,9 @@ export function TodayReceptionBoard({
             {status.label} {statusCounts[status.code] ?? 0}
           </button>
         ))}
+        <span className="rounded-full bg-periwinkle px-3 py-1.5 text-xs font-bold text-monday-violet">
+          상담 후보 {consultationCandidateCount}명
+        </span>
       </div>
 
       {isLoading ? (

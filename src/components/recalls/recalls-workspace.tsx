@@ -1,7 +1,7 @@
 "use client";
 
-import { ClipboardList, Filter, Save, Trash2, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ClipboardList, Filter, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useAdminSettings } from "@/hooks/use-admin-settings";
 import { useConsultations } from "@/hooks/use-consultations";
 import {
@@ -19,6 +19,10 @@ import {
   isPartialRecontactTarget,
 } from "@/lib/consultation-recommendations";
 import { formatCurrency, formatNumber } from "@/lib/format";
+import {
+  loadDentwebRecallCandidates,
+  type DentwebRecallCandidate,
+} from "@/lib/local-api-client";
 import type { Consultation } from "@/types/domain";
 
 type RecallDialogTarget = {
@@ -531,6 +535,127 @@ function RecallEntryDialog({
   );
 }
 
+function formatDentwebCandidateDate(candidate: DentwebRecallCandidate) {
+  const date = String(candidate.appointmentDate ?? "").replace(/\D/g, "");
+  const time = String(candidate.appointmentTime ?? "").replace(/\D/g, "");
+
+  if (date.length !== 8) {
+    return "-";
+  }
+
+  const dateText = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
+
+  return time.length >= 4 ? `${dateText} ${time.slice(0, 2)}:${time.slice(2, 4)}` : dateText;
+}
+
+function DentwebRecallCandidatePanel({ clinicId }: { clinicId: string }) {
+  const [candidates, setCandidates] = useState<DentwebRecallCandidate[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [message, setMessage] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    let isCurrent = true;
+
+    const loadCandidates = async () => {
+      try {
+        setIsLoading(true);
+        const payload = await loadDentwebRecallCandidates({ clinicId, limit: 40 });
+
+        if (!isCurrent) {
+          return;
+        }
+
+        setCandidates(payload.candidates ?? []);
+        setMessage("");
+      } catch {
+        if (isCurrent) {
+          setCandidates([]);
+          setMessage("덴트웹 예약 이슈 후보를 불러오지 못했습니다. 서버 PC 연결 상태를 확인해주세요.");
+        }
+      } finally {
+        if (isCurrent) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    void loadCandidates();
+    const refreshTimer = window.setInterval(() => void loadCandidates(), 60_000);
+
+    return () => {
+      isCurrent = false;
+      window.clearInterval(refreshTimer);
+    };
+  }, [clinicId, reloadKey]);
+
+  return (
+    <section className="crm-card overflow-hidden">
+      <div className="flex flex-col gap-3 border-b border-mist px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-lg font-bold text-ink">덴트웹 예약 이슈 후보</h2>
+            <span className="rounded-full bg-periwinkle px-2.5 py-1 text-xs font-bold text-monday-violet">
+              실시간 {formatNumber(candidates.length)}명
+            </span>
+          </div>
+          <p className="mt-1 text-sm text-slate">취소·보류·예약 시간 경과 후 미이행 환자 중 재예약이 없는 환자만 표시합니다.</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setReloadKey((current) => current + 1)}
+          disabled={isLoading}
+          className="inline-flex h-9 w-fit items-center gap-2 rounded-md border border-pebble bg-white px-3 text-xs font-bold text-slate transition hover:border-monday-violet hover:text-monday-violet disabled:cursor-wait disabled:opacity-60"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} aria-hidden />
+          새로고침
+        </button>
+      </div>
+      {isLoading ? (
+        <p className="px-4 py-8 text-center text-sm font-bold text-slate">덴트웹 예약 이슈를 확인하고 있습니다.</p>
+      ) : message ? (
+        <p className="px-4 py-8 text-center text-sm font-bold text-[#b94b10]">{message}</p>
+      ) : candidates.length ? (
+        <div className="max-h-[25rem] overflow-auto">
+          <table className="crm-table min-w-[860px]">
+            <thead className="sticky top-0 z-10 shadow-[0_1px_0_rgba(6,43,100,0.16)]">
+              <tr>
+                <th>상태</th>
+                <th>환자</th>
+                <th>예약일시</th>
+                <th>Dr.</th>
+                <th>예약 내용</th>
+                <th>추천 사유</th>
+              </tr>
+            </thead>
+            <tbody>
+              {candidates.map((candidate, index) => (
+                <tr key={`${candidate.patientId ?? candidate.chartNo ?? "patient"}-${candidate.appointmentDate}-${candidate.appointmentTime}-${index}`}>
+                  <td>
+                    <span className="rounded-full bg-apricot/30 px-2.5 py-1 text-xs font-bold text-[#b94b10]">
+                      {candidate.status || "이슈"}
+                    </span>
+                  </td>
+                  <td>
+                    <p className="font-bold text-ink">{candidate.patientName || "이름 없음"}</p>
+                    <p className="metric-number mt-1 text-xs font-bold text-slate">{candidate.chartNo || "차트번호 없음"}</p>
+                  </td>
+                  <td className="metric-number font-bold text-ink">{formatDentwebCandidateDate(candidate)}</td>
+                  <td>{candidate.doctor ? `Dr. ${candidate.doctor}` : "-"}</td>
+                  <td className="max-w-[22rem] truncate">{candidate.appointmentNote || candidate.memo || "-"}</td>
+                  <td className="font-bold text-slate">{candidate.reason || "예약 상태 확인 필요"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="px-4 py-8 text-center text-sm font-bold text-slate">현재 조건에 맞는 덴트웹 예약 이슈 후보가 없습니다.</p>
+      )}
+    </section>
+  );
+}
+
 export function RecallsWorkspace({ initialTab = "declined" }: RecallsWorkspaceProps) {
   const { activeClinic } = useAdminSettings();
   const { consultations } = useConsultations({ clinicId: activeClinic.id });
@@ -750,6 +875,8 @@ export function RecallsWorkspace({ initialTab = "declined" }: RecallsWorkspacePr
           ) : null}
         </div>
       </section>
+
+      <DentwebRecallCandidatePanel clinicId={activeClinic.id} />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {[

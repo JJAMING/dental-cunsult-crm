@@ -101,6 +101,61 @@ export type DentwebPatientAppointmentsResponse = {
   source?: "dentweb_live" | "snapshot";
 };
 
+export type DentwebRecallCandidate = {
+  appointmentDate?: string;
+  appointmentTime?: string;
+  appointmentNote?: string;
+  chartNo?: string;
+  doctor?: string;
+  memo?: string;
+  patientId?: number | string;
+  patientName?: string;
+  reason?: string;
+  status?: string;
+};
+
+export type DentwebRecallCandidatesResponse = {
+  candidates?: DentwebRecallCandidate[];
+  checkedAt?: string;
+  clinicId?: string;
+  count?: number;
+  error?: string;
+  message?: string;
+  ok: boolean;
+  readOnly?: boolean;
+  source?: "dentweb_live";
+};
+
+export type DentwebTreatmentFee = {
+  accountAmount?: number;
+  cardAmount?: number;
+  cashAmount?: number;
+  cashReceiptAmount?: number;
+  collectionReference?: number;
+  doctor?: string;
+  memo?: string;
+  nonCoveredAmount?: number;
+  patientBurdenAmount?: number;
+  receivedAt?: string;
+  totalTreatmentAmount?: number;
+  treatmentContent?: string;
+  treatmentDate?: string;
+};
+
+export type DentwebTreatmentFeesResponse = {
+  checkedAt?: string;
+  clinicId?: string;
+  count?: number;
+  error?: string;
+  message?: string;
+  ok: boolean;
+  patientId?: number | string | null;
+  readOnly?: boolean;
+  source?: "dentweb_live";
+  totalCollectionReference?: number;
+  fees?: DentwebTreatmentFee[];
+};
+
 export type DentwebReceptionPatient = {
   age?: number | null;
   birthDate?: string;
@@ -504,6 +559,58 @@ export async function loadDentwebPatientAppointments({
 
   return fetchLocalApiJson<DentwebPatientAppointmentsResponse>(
     `/dentweb/patients/appointments?${params.toString()}`,
+  );
+}
+
+export async function loadDentwebRecallCandidates({
+  clinicId,
+  limit = 40,
+}: {
+  clinicId: string;
+  limit?: number;
+}) {
+  const params = new URLSearchParams({
+    clinicId,
+    limit: String(limit),
+  });
+
+  return fetchLocalApiJson<DentwebRecallCandidatesResponse>(
+    `/dentweb/recall-candidates?${params.toString()}`,
+  );
+}
+
+export async function loadDentwebTreatmentFees({
+  chartNo,
+  clinicId,
+  fromDate,
+  limit = 10,
+  patientId,
+}: {
+  chartNo?: string;
+  clinicId: string;
+  fromDate?: string;
+  limit?: number;
+  patientId?: number | string;
+}) {
+  const params = new URLSearchParams({
+    clinicId,
+    limit: String(limit),
+  });
+
+  if (patientId !== undefined && patientId !== null) {
+    params.set("patientId", String(patientId));
+  }
+
+  if (chartNo) {
+    params.set("chartNo", chartNo);
+  }
+
+  if (fromDate) {
+    params.set("fromDate", fromDate);
+  }
+
+  return fetchLocalApiJson<DentwebTreatmentFeesResponse>(
+    `/dentweb/patients/treatment-fees?${params.toString()}`,
   );
 }
 

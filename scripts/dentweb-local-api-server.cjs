@@ -14,7 +14,7 @@ const configPath = path.join(runtimeDir, "server-config.json");
 const clientsPath = path.join(runtimeDir, "clients.json");
 const localDbPath = path.join(runtimeDir, "local.db");
 const serverSecretsPath = path.join(runtimeDir, "server-secrets.env");
-const localDbSchemaVersion = 2;
+const localDbSchemaVersion = 3;
 const validClientStatuses = new Set(["pending_approval", "approved", "rejected"]);
 const dentwebProcessKeywords = ["dentweb", "dent", "dental"];
 const dentwebDbFileNames = [
@@ -98,6 +98,7 @@ const localDbTableDefinitions = [
         clinic_id TEXT NOT NULL,
         clinic_name TEXT,
         consultation_date TEXT NOT NULL,
+        dentweb_patient_id TEXT,
         patient_name TEXT NOT NULL,
         chart_no TEXT,
         patient_type TEXT,
@@ -844,6 +845,171 @@ async function queryDentwebPatientAppointmentsLive(config, input = {}) {
   });
 }
 
+async function queryDentwebRecallCandidatesLive(config, input = {}) {
+  const limit = clampLimit(input.limit, 30, 80);
+  const scanLimit = Math.min(Math.max(limit * 8, 160), 600);
+  const nowDateTime = getKoreanDateTimeDigits();
+
+  return withDentwebSqlServer(config, async ({ sql, pool }) => {
+    const result = await pool
+      .request()
+      .input("limit", sql.Int, scanLimit)
+      .query(`
+        SELECT TOP (@limit)
+          appointment.[n환자ID] AS [patientId],
+          patient.[sz차트번호] AS [chartNo],
+          COALESCE(NULLIF(patient.[sz이름], ''), appointment.[sz이름]) AS [patientName],
+          appointment.[sz예약시각] AS [appointmentDateTime],
+          appointment.[n이행현황] AS [statusCode],
+          appointment.[sz예약내용] AS [appointmentNote],
+          appointment.[sz메모] AS [memo],
+          doctor.[sz이름] AS [doctor]
+        FROM [dbo].[PUB_V예약정보] AS appointment
+        LEFT JOIN [dbo].[PUB_V환자정보] AS patient
+          ON patient.[n환자ID] = appointment.[n환자ID]
+        LEFT JOIN [dbo].[PUB_V직원정보] AS doctor
+          ON doctor.[nID] = appointment.[n담당의사]
+        WHERE appointment.[n이행현황] IN (0, 2, 3)
+        ORDER BY appointment.[sz예약시각] DESC;
+      `);
+
+    const rows = result.recordset.map((row) => ({
+      appointmentDateTime: String(row.appointmentDateTime || "").replace(/\D/g, "").slice(0, 12),
+      appointmentNote: normalizeMappedValue(row.appointmentNote),
+      chartNo: normalizeMappedValue(row.chartNo),
+      doctor: normalizeMappedValue(row.doctor),
+      memo: normalizeMappedValue(row.memo),
+      patientId: normalizeMappedValue(row.patientId),
+      patientName: normalizeMappedValue(row.patientName),
+      statusCode: Number(row.statusCode),
+    }));
+    const futureScheduledPatientIds = new Set(
+      rows
+        .filter((row) => row.statusCode === 0 && row.appointmentDateTime > nowDateTime && row.patientId)
+        .map((row) => row.patientId),
+    );
+    const seen = new Set();
+    const candidates = rows
+      .filter((row) => {
+        const isMissed = row.statusCode === 0 && row.appointmentDateTime && row.appointmentDateTime <= nowDateTime;
+        const isCancelledOrHeld = row.statusCode === 2 || row.statusCode === 3;
+
+        return (isMissed || isCancelledOrHeld) && !futureScheduledPatientIds.has(row.patientId);
+      })
+      .filter((row) => {
+        const key = [row.patientId || row.chartNo, row.appointmentDateTime, row.statusCode].join(":");
+
+        if (seen.has(key)) {
+          return false;
+        }
+
+        seen.add(key);
+        return true;
+      })
+      .slice(0, limit)
+      .map((row) => ({
+        patientId: row.patientId,
+        chartNo: row.chartNo,
+        patientName: row.patientName,
+        appointmentDate: formatDentwebAppointmentDate(row.appointmentDateTime),
+        appointmentTime: formatDentwebAppointmentTime(row.appointmentDateTime),
+        doctor: row.doctor,
+        status: mapDentwebAppointmentStatus(row.statusCode),
+        appointmentNote: row.appointmentNote,
+        memo: row.memo,
+        reason:
+          row.statusCode === 2
+            ? "예약 취소"
+            : row.statusCode === 3
+              ? "예약 보류"
+              : "예약 시간 경과 후 미이행",
+      }));
+
+    return { candidates };
+  });
+}
+
+async function queryDentwebTreatmentFeesLive(config, input = {}) {
+  const patientId = parseDentwebPatientId(input.patientId || input.id);
+  const chartNo = normalizeSearchText(input.chartNo || input.chart_no);
+  const fromDate = String(input.fromDate || input.from_date || "").replace(/\D/g, "").slice(0, 8);
+  const limit = clampLimit(input.limit, 10, 30);
+
+  if (patientId === null && !chartNo) {
+    return null;
+  }
+
+  return withDentwebSqlServer(config, async ({ sql, pool }) => {
+    const request = pool.request().input("limit", sql.Int, limit);
+    let whereClause = "";
+
+    if (patientId !== null) {
+      request.input("patientId", sql.Int, patientId);
+      whereClause = "fee.[n환자ID] = @patientId";
+    } else {
+      request.input("chartNo", sql.VarChar(30), chartNo);
+      whereClause = "patient.[sz차트번호] = @chartNo";
+    }
+
+    if (fromDate) {
+      request.input("fromDate", sql.Char(8), fromDate);
+      whereClause += " AND ISNULL(fee.[sz진료일], '') >= @fromDate";
+    }
+
+    const result = await request.query(`
+      SELECT TOP (@limit)
+        fee.[n환자ID] AS [patientId],
+        fee.[sz진료일] AS [treatmentDate],
+        fee.[sz수납시각] AS [receivedAt],
+        fee.[n총진료비] AS [totalTreatmentAmount],
+        fee.[n본인부담금] AS [patientBurdenAmount],
+        fee.[n비급여진료비] AS [nonCoveredAmount],
+        fee.[n카드수납액] AS [cardAmount],
+        fee.[n현금수납액] AS [cashAmount],
+        fee.[n통장수납액] AS [accountAmount],
+        fee.[n현영발행액] AS [cashReceiptAmount],
+        fee.[sz치료내용] AS [treatmentContent],
+        fee.[sz메모] AS [memo],
+        doctor.[sz이름] AS [doctor]
+      FROM [dbo].[PUB_V진료비내역] AS fee
+      LEFT JOIN [dbo].[PUB_V환자정보] AS patient
+        ON patient.[n환자ID] = fee.[n환자ID]
+      LEFT JOIN [dbo].[PUB_V직원정보] AS doctor
+        ON doctor.[nID] = fee.[n담당의사]
+      WHERE ${whereClause}
+      ORDER BY ISNULL(fee.[sz수납시각], '') DESC, ISNULL(fee.[sz진료일], '') DESC;
+    `);
+
+    const fees = result.recordset.map((row) => {
+      const cardAmount = Number(row.cardAmount || 0);
+      const cashAmount = Number(row.cashAmount || 0);
+      const accountAmount = Number(row.accountAmount || 0);
+
+      return {
+        treatmentDate: normalizeMappedValue(row.treatmentDate),
+        receivedAt: normalizeMappedValue(row.receivedAt),
+        totalTreatmentAmount: Number(row.totalTreatmentAmount || 0),
+        patientBurdenAmount: Number(row.patientBurdenAmount || 0),
+        nonCoveredAmount: Number(row.nonCoveredAmount || 0),
+        cardAmount,
+        cashAmount,
+        accountAmount,
+        cashReceiptAmount: Number(row.cashReceiptAmount || 0),
+        collectionReference: cardAmount + cashAmount + accountAmount,
+        treatmentContent: normalizeMappedValue(row.treatmentContent),
+        memo: normalizeMappedValue(row.memo),
+        doctor: normalizeMappedValue(row.doctor),
+      };
+    });
+
+    return {
+      patientId: patientId ?? (normalizeMappedValue(result.recordset[0]?.patientId) || null),
+      fees,
+      totalCollectionReference: fees.reduce((total, fee) => total + fee.collectionReference, 0),
+    };
+  });
+}
+
 function getKoreanDateDigits(value = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Seoul",
@@ -854,6 +1020,21 @@ function getKoreanDateDigits(value = new Date()) {
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
 
   return `${values.year}${values.month}${values.day}`;
+}
+
+function getKoreanDateTimeDigits(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(value);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+
+  return `${values.year}${values.month}${values.day}${values.hour}${values.minute}`;
 }
 
 function normalizeDentwebReceptionDate(value) {
@@ -1168,6 +1349,14 @@ function ensureLocalDbSchema(db, config) {
   localDbTableDefinitions.forEach((definition) => {
     db.exec(definition.createSql);
   });
+
+  // Existing server databases predate the Dentweb patient key column.
+  // The key is nullable so legacy consultation rows continue to work.
+  try {
+    db.exec("ALTER TABLE consultations ADD COLUMN dentweb_patient_id TEXT");
+  } catch {
+    // SQLite reports a duplicate-column error after the first migration.
+  }
 
   localDbIndexDefinitions.forEach((createSql) => {
     db.exec(createSql);
@@ -3125,6 +3314,97 @@ async function buildDentwebPatientAppointmentsPayload(config, input = {}) {
   return buildDentwebPatientAppointmentsSnapshotPayload(config, input);
 }
 
+async function buildDentwebRecallCandidatesPayload(config, input = {}) {
+  const clinicId = normalizeClinicId(input.clinicId, config);
+
+  if (!getDentwebSqlServerConfig(config)) {
+    return {
+      ok: false,
+      error: "dentweb_sql_server_not_configured",
+      message: "Dentweb SQL Server read-only connection is not configured.",
+      clinicId,
+      candidates: [],
+      checkedAt: new Date().toISOString(),
+    };
+  }
+
+  try {
+    const result = await queryDentwebRecallCandidatesLive(config, input);
+
+    return {
+      ok: true,
+      readOnly: true,
+      source: "dentweb_live",
+      clinicId,
+      candidates: result.candidates,
+      count: result.candidates.length,
+      message: "Dentweb cancelled, held, and overdue appointments were evaluated in real time.",
+      checkedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: "dentweb_recall_candidates_unavailable",
+      message: error instanceof Error ? error.message : "Dentweb recall candidates could not be loaded.",
+      clinicId,
+      candidates: [],
+      checkedAt: new Date().toISOString(),
+    };
+  }
+}
+
+async function buildDentwebTreatmentFeesPayload(config, input = {}) {
+  const clinicId = normalizeClinicId(input.clinicId, config);
+
+  if (!getDentwebSqlServerConfig(config)) {
+    return {
+      ok: false,
+      error: "dentweb_sql_server_not_configured",
+      message: "Dentweb SQL Server read-only connection is not configured.",
+      clinicId,
+      fees: [],
+      checkedAt: new Date().toISOString(),
+    };
+  }
+
+  try {
+    const result = await queryDentwebTreatmentFeesLive(config, input);
+
+    if (!result) {
+      return {
+        ok: false,
+        error: "dentweb_patient_required",
+        message: "A Dentweb patient ID or chart number is required.",
+        clinicId,
+        fees: [],
+        checkedAt: new Date().toISOString(),
+      };
+    }
+
+    return {
+      ok: true,
+      readOnly: true,
+      source: "dentweb_live",
+      clinicId,
+      patientId: result.patientId,
+      fees: result.fees,
+      count: result.fees.length,
+      totalCollectionReference: result.totalCollectionReference,
+      message: "Dentweb treatment fee records were loaded as a read-only reference.",
+      checkedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: "dentweb_treatment_fees_unavailable",
+      message: error instanceof Error ? error.message : "Dentweb treatment fee records could not be loaded.",
+      clinicId,
+      fees: [],
+      checkedAt: new Date().toISOString(),
+    };
+  }
+}
+
 function buildDentwebSourceMappingPayload(config) {
   const mapping = getDentwebSourceMapping(config);
 
@@ -3842,6 +4122,7 @@ function rowToConsultation(row) {
     clinicId: row.clinic_id || undefined,
     clinicName: row.clinic_name || undefined,
     date: row.consultation_date || "",
+    dentwebPatientId: row.dentweb_patient_id || undefined,
     patientName: row.patient_name || "",
     chartNo: row.chart_no || "",
     patientType: row.patient_type || "new",
@@ -3880,6 +4161,7 @@ function normalizeConsultationInput(input, config, fallback = {}) {
     clinicId: normalizeClinicId(input.clinicId ?? fallback.clinicId, config),
     clinicName: toText(input.clinicName ?? fallback.clinicName, config.clinicName),
     date: toText(input.date, fallback.date || new Date().toISOString().slice(0, 10)),
+    dentwebPatientId: toText(input.dentwebPatientId ?? fallback.dentwebPatientId, ""),
     patientName: toText(input.patientName, fallback.patientName || ""),
     chartNo: toText(input.chartNo, fallback.chartNo || ""),
     patientType: toText(input.patientType, fallback.patientType || "new"),
@@ -4085,6 +4367,7 @@ async function syncConsultationToSupabase(supabase, operation, consultation) {
     app_row_id: consultation.id,
     patient_id: patient.id,
     consultation_date: consultation.date,
+    dentweb_patient_id: consultation.dentwebPatientId || null,
     counselor_id: counselorId,
     doctor_id: doctorId,
     visit_channel_id: visitChannelId,
@@ -4266,6 +4549,7 @@ function insertConsultation(db, consultation) {
       clinic_id,
       clinic_name,
       consultation_date,
+      dentweb_patient_id,
       patient_name,
       chart_no,
       patient_type,
@@ -4285,12 +4569,13 @@ function insertConsultation(db, consultation) {
       created_at,
       updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     consultation.id,
     consultation.clinicId,
     consultation.clinicName,
     consultation.date,
+    consultation.dentwebPatientId,
     consultation.patientName,
     consultation.chartNo,
     consultation.patientType,
@@ -4320,6 +4605,7 @@ function updateConsultationRow(db, consultation) {
       clinic_id = ?,
       clinic_name = ?,
       consultation_date = ?,
+      dentweb_patient_id = ?,
       patient_name = ?,
       chart_no = ?,
       patient_type = ?,
@@ -4342,6 +4628,7 @@ function updateConsultationRow(db, consultation) {
     consultation.clinicId,
     consultation.clinicName,
     consultation.date,
+    consultation.dentwebPatientId,
     consultation.patientName,
     consultation.chartNo,
     consultation.patientType,
@@ -4687,6 +4974,8 @@ function buildHealthPayload(config, startedAt) {
       "/dentweb/sync-now",
       "/dentweb/patients/search",
       "/dentweb/patients/appointments",
+      "/dentweb/patients/treatment-fees",
+      "/dentweb/recall-candidates",
       "/dentweb/receptions/today",
       "/local-db/status",
       "/local-db/schema",
@@ -5017,6 +5306,31 @@ async function handleDentwebPatientAppointments(request, response, requestUrl, c
   sendJson(response, payload.ok ? 200 : 500, payload);
 }
 
+async function handleDentwebRecallCandidates(request, response, requestUrl, config) {
+  const body = request.method === "POST" ? await readJsonBody(request) : {};
+  const payload = await buildDentwebRecallCandidatesPayload(config, {
+    ...body,
+    clinicId: body.clinicId ?? requestUrl.searchParams.get("clinicId"),
+    limit: body.limit ?? requestUrl.searchParams.get("limit"),
+  });
+
+  sendJson(response, payload.ok ? 200 : 500, payload);
+}
+
+async function handleDentwebTreatmentFees(request, response, requestUrl, config) {
+  const body = request.method === "POST" ? await readJsonBody(request) : {};
+  const payload = await buildDentwebTreatmentFeesPayload(config, {
+    ...body,
+    chartNo: body.chartNo ?? requestUrl.searchParams.get("chartNo"),
+    clinicId: body.clinicId ?? requestUrl.searchParams.get("clinicId"),
+    fromDate: body.fromDate ?? requestUrl.searchParams.get("fromDate"),
+    limit: body.limit ?? requestUrl.searchParams.get("limit"),
+    patientId: body.patientId ?? requestUrl.searchParams.get("patientId"),
+  });
+
+  sendJson(response, payload.ok ? 200 : 500, payload);
+}
+
 async function handleDentwebTodayReception(request, response, requestUrl, config) {
   const body = request.method === "POST" ? await readJsonBody(request) : {};
 
@@ -5188,6 +5502,22 @@ function createServer(config, startedAt) {
         requestUrl.pathname === "/dentweb/patients/appointments"
       ) {
         await handleDentwebPatientAppointments(request, response, requestUrl, config);
+        return;
+      }
+
+      if (
+        (request.method === "GET" || request.method === "POST") &&
+        requestUrl.pathname === "/dentweb/patients/treatment-fees"
+      ) {
+        await handleDentwebTreatmentFees(request, response, requestUrl, config);
+        return;
+      }
+
+      if (
+        (request.method === "GET" || request.method === "POST") &&
+        requestUrl.pathname === "/dentweb/recall-candidates"
+      ) {
+        await handleDentwebRecallCandidates(request, response, requestUrl, config);
         return;
       }
 

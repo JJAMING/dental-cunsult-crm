@@ -6,9 +6,11 @@ import { useAdminSettings } from "@/hooks/use-admin-settings";
 import { optionGroupConfigs, type OptionGroupKey } from "@/lib/admin-settings";
 import {
   loadDentwebPatientAppointments,
+  loadDentwebTreatmentFees,
   searchDentwebPatients,
   type DentwebSnapshotAppointment,
   type DentwebSnapshotPatient,
+  type DentwebTreatmentFee,
 } from "@/lib/local-api-client";
 import type { Consultation, ConsultationResult, PatientType } from "@/types/domain";
 
@@ -49,6 +51,12 @@ type AppointmentLookupState = {
   message: string;
   patientKey: string;
   status: "idle" | "loading" | "success" | "empty" | "error";
+};
+type TreatmentFeeLookupState = {
+  fees: DentwebTreatmentFee[];
+  message: string;
+  status: "idle" | "loading" | "success" | "empty" | "error";
+  totalCollectionReference: number;
 };
 
 type SelectFormKey =
@@ -279,6 +287,26 @@ function formatDentwebPhone(value?: string) {
   }
 
   return value || "-";
+}
+
+function formatDentwebReceiptDate(value?: string) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+
+  if (digits.length < 8) {
+    return value || "-";
+  }
+
+  const date = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+
+  if (digits.length < 12) {
+    return date;
+  }
+
+  return `${date} ${digits.slice(8, 10)}:${digits.slice(10, 12)}`;
+}
+
+function formatDentwebCurrency(value?: number) {
+  return `₩${amountFormatter.format(Math.max(Number(value) || 0, 0))}`;
 }
 
 function DentwebPatientSearchDropdown({
@@ -530,6 +558,15 @@ export function ConsultationFormDialog({
     patientKey: "",
     status: "idle",
   });
+  const [dentwebPatientId, setDentwebPatientId] = useState(
+    () => consultation?.dentwebPatientId ?? initialValues?.dentwebPatientId ?? "",
+  );
+  const [treatmentFeeLookupState, setTreatmentFeeLookupState] = useState<TreatmentFeeLookupState>({
+    fees: [],
+    message: "",
+    status: "idle",
+    totalCollectionReference: 0,
+  });
   const [selectedDentwebPatient, setSelectedDentwebPatient] = useState<DentwebSnapshotPatient | null>(null);
   const selectedDentwebMemo = useMemo(
     () => buildDentwebMemoText(selectedDentwebPatient ?? undefined),
@@ -682,6 +719,7 @@ export function ConsultationFormDialog({
     appointmentRequestIdRef.current += 1;
     lastAutoSearchQueryRef.current = selectedQuery;
     setSelectedDentwebPatient(patient);
+    setDentwebPatientId(String(patient.id ?? ""));
     setFormState((current) => ({
       ...current,
       chartNo: patient.chartNo || current.chartNo,
@@ -779,6 +817,59 @@ export function ConsultationFormDialog({
     };
   }, [formState.chartNo, formState.patientName, runPatientSearch]);
 
+  useEffect(() => {
+    if (!consultation || !dentwebPatientId) {
+      return;
+    }
+
+    let isCurrent = true;
+    void Promise.resolve()
+      .then(() => {
+        setTreatmentFeeLookupState((current) => ({
+          ...current,
+          message: "덴트웹 수납 내역을 확인하고 있습니다.",
+          status: "loading",
+        }));
+
+        return loadDentwebTreatmentFees({
+          chartNo: formState.chartNo,
+          clinicId: activeClinic.id,
+          fromDate: consultation.date,
+          limit: 10,
+          patientId: dentwebPatientId,
+        });
+      })
+      .then((payload) => {
+        if (!isCurrent) {
+          return;
+        }
+
+        const fees = payload.fees ?? [];
+        setTreatmentFeeLookupState({
+          fees,
+          message: fees.length
+            ? "덴트웹의 카드·현금·통장 수납 합계를 참고용으로 표시합니다."
+            : "상담일 이후의 덴트웹 수납 내역이 없습니다.",
+          status: fees.length ? "success" : "empty",
+          totalCollectionReference: payload.totalCollectionReference ?? 0,
+        });
+      })
+      .catch(() => {
+        if (isCurrent) {
+          setTreatmentFeeLookupState({
+            fees: [],
+            message: "덴트웹 수납 내역을 불러오지 못했습니다. 서버 PC 연결 상태를 확인해주세요.",
+            status: "error",
+            totalCollectionReference: 0,
+          });
+        }
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [activeClinic.id, consultation, dentwebPatientId, formState.chartNo]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-ink/35 p-4 backdrop-blur-sm"
@@ -825,6 +916,7 @@ export function ConsultationFormDialog({
               clinicId: consultation?.clinicId ?? activeClinic.id,
               clinicName: consultation?.clinicName ?? activeClinic.name,
               date: formState.date,
+              dentwebPatientId: dentwebPatientId || undefined,
               patientName: formState.patientName.trim(),
               chartNo: formState.chartNo.trim(),
               patientType: toPatientType(formState.patientType),
@@ -878,6 +970,7 @@ export function ConsultationFormDialog({
                         if (field.name === "patientName" || field.name === "chartNo") {
                           patientSearchRequestIdRef.current += 1;
                           appointmentRequestIdRef.current += 1;
+                          setDentwebPatientId("");
                           setSelectedDentwebPatient(null);
                           setAppointmentLookupState({
                             appointments: [],
@@ -1060,6 +1153,53 @@ export function ConsultationFormDialog({
               </div>
             ) : null}
           </div>
+
+          {consultation && dentwebPatientId ? (
+            <section className="rounded-xl border border-pebble bg-fog px-4 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-bold text-ink">덴트웹 수납 참고</p>
+                  <p className="mt-1 text-xs text-slate">상담일 이후의 수납 내역을 읽기 전용으로 비교합니다.</p>
+                </div>
+                <p className={[
+                  "text-xs font-bold",
+                  treatmentFeeLookupState.status === "error" ? "text-red-600" : "text-slate",
+                ].join(" ")}>
+                  {treatmentFeeLookupState.status === "loading" ? "불러오는 중" : treatmentFeeLookupState.message}
+                </p>
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <div className="rounded-lg border border-mist bg-white px-3 py-3">
+                  <p className="text-xs font-bold text-slate">CRM 동의금액</p>
+                  <p className="metric-number mt-1 font-bold text-ink">{formatDentwebCurrency(parseNumberInput(formState.agreedAmount))}</p>
+                </div>
+                <div className="rounded-lg border border-mist bg-white px-3 py-3">
+                  <p className="text-xs font-bold text-slate">덴트웹 수납 참고액</p>
+                  <p className="metric-number mt-1 font-bold text-ink">{formatDentwebCurrency(treatmentFeeLookupState.totalCollectionReference)}</p>
+                </div>
+                <div className="rounded-lg border border-mist bg-white px-3 py-3">
+                  <p className="text-xs font-bold text-slate">참고 차이</p>
+                  <p className="metric-number mt-1 font-bold text-ink">
+                    {formatDentwebCurrency(Math.abs(parseNumberInput(formState.agreedAmount) - treatmentFeeLookupState.totalCollectionReference))}
+                  </p>
+                </div>
+              </div>
+              {treatmentFeeLookupState.fees.length ? (
+                <div className="mt-3 max-h-52 overflow-y-auto rounded-lg border border-mist bg-white">
+                  {treatmentFeeLookupState.fees.map((fee, index) => (
+                    <div key={`${fee.receivedAt ?? fee.treatmentDate ?? "fee"}-${index}`} className="grid gap-2 border-b border-mist px-3 py-3 last:border-b-0 sm:grid-cols-[10rem_1fr_auto] sm:items-center">
+                      <p className="metric-number text-xs font-bold text-slate">{formatDentwebReceiptDate(fee.receivedAt || fee.treatmentDate)}</p>
+                      <p className="min-w-0 truncate text-xs font-bold text-ink">
+                        {fee.treatmentContent || fee.memo || "진료비 내역"}
+                        {fee.doctor ? <span className="ml-2 text-slate">Dr. {fee.doctor}</span> : null}
+                      </p>
+                      <p className="metric-number text-right text-sm font-bold text-ink">{formatDentwebCurrency(fee.collectionReference)}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {selectFields.map(({ groupKey, formKey }) => (
