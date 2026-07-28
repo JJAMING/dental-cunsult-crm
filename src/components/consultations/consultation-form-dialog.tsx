@@ -42,7 +42,6 @@ type FormMode = "default" | "treatmentPlan";
 type PatientSearchState = {
   message: string;
   patients: DentwebSnapshotPatient[];
-  selectedPatientId?: number | string;
   status: "idle" | "loading" | "success" | "empty" | "error";
 };
 type AppointmentLookupState = {
@@ -531,15 +530,9 @@ export function ConsultationFormDialog({
     patientKey: "",
     status: "idle",
   });
-  const selectedDentwebPatient = useMemo(
-    () =>
-      patientSearchState.patients.find(
-        (patient) => patientSearchState.selectedPatientId !== undefined && patient.id === patientSearchState.selectedPatientId,
-      ),
-    [patientSearchState.patients, patientSearchState.selectedPatientId],
-  );
+  const [selectedDentwebPatient, setSelectedDentwebPatient] = useState<DentwebSnapshotPatient | null>(null);
   const selectedDentwebMemo = useMemo(
-    () => buildDentwebMemoText(selectedDentwebPatient),
+    () => buildDentwebMemoText(selectedDentwebPatient ?? undefined),
     [selectedDentwebPatient],
   );
   const selectedDentwebAppointments = useMemo(() => {
@@ -564,12 +557,15 @@ export function ConsultationFormDialog({
   };
   const lastAutoSearchQueryRef = useRef("");
   const patientSearchRequestIdRef = useRef(0);
+  const appointmentRequestIdRef = useRef(0);
 
   const runPatientSearch = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     const query = (formState.patientName.trim() || formState.chartNo.trim()).trim();
 
     if (!query) {
       patientSearchRequestIdRef.current += 1;
+      appointmentRequestIdRef.current += 1;
+      setSelectedDentwebPatient(null);
       setIsPatientSearchDropdownOpen(false);
       if (!silent) {
         setPatientSearchState({
@@ -634,6 +630,7 @@ export function ConsultationFormDialog({
 
   const loadAppointmentsForPatient = async (patient: DentwebSnapshotPatient) => {
     const patientKey = getDentwebPatientKey(patient);
+    const requestId = ++appointmentRequestIdRef.current;
 
     setAppointmentLookupState({
       appointments: patient.appointments ?? [],
@@ -652,6 +649,10 @@ export function ConsultationFormDialog({
       });
       const appointments = payload.appointments ?? [];
 
+      if (requestId !== appointmentRequestIdRef.current) {
+        return;
+      }
+
       setAppointmentLookupState({
         appointments,
         message: appointments.length
@@ -661,6 +662,10 @@ export function ConsultationFormDialog({
         status: appointments.length ? "success" : "empty",
       });
     } catch {
+      if (requestId !== appointmentRequestIdRef.current) {
+        return;
+      }
+
       setAppointmentLookupState({
         appointments: patient.appointments ?? [],
         message: "예약 스냅샷을 추가로 불러오지 못했습니다. 검색 결과의 기본 예약 정보만 표시합니다.",
@@ -674,7 +679,9 @@ export function ConsultationFormDialog({
     const selectedQuery = (patient.patientName || patient.chartNo || "").trim();
 
     patientSearchRequestIdRef.current += 1;
+    appointmentRequestIdRef.current += 1;
     lastAutoSearchQueryRef.current = selectedQuery;
+    setSelectedDentwebPatient(patient);
     setFormState((current) => ({
       ...current,
       chartNo: patient.chartNo || current.chartNo,
@@ -696,7 +703,9 @@ export function ConsultationFormDialog({
 
     setFormState((current) => ({
       ...current,
-      memo: [current.memo.trim(), selectedDentwebMemo].filter(Boolean).join("\n\n"),
+      memo: current.memo.includes(selectedDentwebMemo)
+        ? current.memo
+        : [current.memo.trim(), selectedDentwebMemo].filter(Boolean).join("\n\n"),
     }));
   };
 
@@ -866,13 +875,20 @@ export function ConsultationFormDialog({
                           field.numeric ? digitsOnly(event.target.value) : event.target.value,
                         );
 
-                        if (field.name === "patientName") {
+                        if (field.name === "patientName" || field.name === "chartNo") {
                           patientSearchRequestIdRef.current += 1;
-                          setIsPatientSearchDropdownOpen(Boolean(event.target.value.trim()));
-                          setPatientSearchState((current) => ({
-                            ...current,
-                            selectedPatientId: undefined,
-                          }));
+                          appointmentRequestIdRef.current += 1;
+                          setSelectedDentwebPatient(null);
+                          setAppointmentLookupState({
+                            appointments: [],
+                            message: "",
+                            patientKey: "",
+                            status: "idle",
+                          });
+
+                          if (field.name === "patientName") {
+                            setIsPatientSearchDropdownOpen(Boolean(event.target.value.trim()));
+                          }
                         }
                       }}
                       className={baseInputClass}
@@ -921,7 +937,7 @@ export function ConsultationFormDialog({
                     <div className="mt-3 grid gap-2 md:grid-cols-2">
                       {patientSearchState.patients.map((patient, index) => {
                         const appointmentText = formatDentwebAppointment(patient.latestAppointment);
-                        const isSelected = patientSearchState.selectedPatientId === patient.id;
+                        const isSelected = false;
 
                         return (
                           <button
@@ -961,6 +977,16 @@ export function ConsultationFormDialog({
                             차트 {selectedDentwebPatient.chartNo || "-"} · 생년월일{" "}
                             {selectedDentwebPatient.birthDate || "-"}
                           </p>
+                          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate">
+                            <span>
+                              성별{" "}
+                              <strong className={getDentwebGenderClass(selectedDentwebPatient.gender)}>
+                                {formatDentwebGender(selectedDentwebPatient.gender)}
+                              </strong>
+                            </span>
+                            <span>만 나이 {getDentwebAge(selectedDentwebPatient.birthDate)}</span>
+                            <span>전화번호 {formatDentwebPhone(selectedDentwebPatient.phone)}</span>
+                          </div>
                         </div>
                         {selectedDentwebMemo ? (
                           <button
@@ -1003,10 +1029,7 @@ export function ConsultationFormDialog({
                                 key={`${appointment.id ?? appointment.appointmentDate ?? "appointment"}-${index}`}
                                 className="rounded-lg border border-mist bg-white px-3 py-2 text-xs text-slate"
                               >
-                                <p className="font-bold text-ink">
-                                  {appointment.appointmentDate || "날짜 없음"}
-                                  {appointment.appointmentTime ? ` ${appointment.appointmentTime}` : ""}
-                                </p>
+                                <p className="font-bold text-ink">{formatDentwebAppointment(appointment) || "예약 정보 없음"}</p>
                                 <p className="mt-1">
                                   {[appointment.doctor ? `담당 ${appointment.doctor}` : "", appointment.status]
                                     .filter(Boolean)
