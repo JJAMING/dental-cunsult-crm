@@ -14,7 +14,8 @@ const configPath = path.join(runtimeDir, "server-config.json");
 const clientsPath = path.join(runtimeDir, "clients.json");
 const localDbPath = path.join(runtimeDir, "local.db");
 const serverSecretsPath = path.join(runtimeDir, "server-secrets.env");
-const localDbSchemaVersion = 3;
+const localDbSchemaVersion = 4;
+const clientGeneratedConsultationIdFloor = 1_000_000_000_000;
 const validClientStatuses = new Set(["pending_approval", "approved", "rejected"]);
 const dentwebProcessKeywords = ["dentweb", "dent", "dental"];
 const dentwebDbFileNames = [
@@ -1368,10 +1369,6 @@ function ensureLocalDbSchema(db, config) {
 
   const now = new Date().toISOString();
 
-  setLocalDbMeta(db, "schema_version", localDbSchemaVersion);
-  setLocalDbMeta(db, "storage_mode", "server_pc_central_db");
-  setLocalDbMeta(db, "last_schema_check_at", now);
-
   db.prepare(`
     INSERT INTO clinics (id, name, source, created_at, updated_at)
     VALUES (?, ?, 'local_api_config', ?, ?)
@@ -1381,8 +1378,15 @@ function ensureLocalDbSchema(db, config) {
   `).run(config.clinicId, config.clinicName, now, now);
 
   if (previousSchemaVersion < localDbSchemaVersion) {
+    repairClientGeneratedConsultationIds(db);
     queueExistingConsultationBackfill(db);
   }
+
+  // Record the version only after any migration has completed. If a migration
+  // is interrupted, the next server start can safely retry it.
+  setLocalDbMeta(db, "schema_version", localDbSchemaVersion);
+  setLocalDbMeta(db, "storage_mode", "server_pc_central_db");
+  setLocalDbMeta(db, "last_schema_check_at", now);
 }
 
 function getLocalDb(config) {
@@ -4143,10 +4147,47 @@ function rowToConsultation(row) {
 }
 
 function nextCentralConsultationId(db) {
-  const row = db.prepare("SELECT MAX(id) AS maxId FROM consultations").get();
+  const row = db.prepare("SELECT MAX(id) AS maxId FROM consultations WHERE id < ?").get(clientGeneratedConsultationIdFloor);
   const maxId = Number(row?.maxId ?? 0);
 
   return Math.max(100000, maxId) + 1;
+}
+
+function repairClientGeneratedConsultationIds(db) {
+  const rows = db
+    .prepare("SELECT * FROM consultations WHERE id >= ? ORDER BY id ASC")
+    .all(clientGeneratedConsultationIdFloor);
+
+  if (!rows.length) {
+    return;
+  }
+
+  try {
+    db.exec("BEGIN IMMEDIATE");
+
+    rows.forEach((row) => {
+      const legacyConsultation = rowToConsultation(row);
+      const nextId = nextCentralConsultationId(db);
+      const nextConsultation = { ...legacyConsultation, id: nextId };
+
+      db.prepare("UPDATE recall_records SET consultation_id = ? WHERE consultation_id = ?").run(nextId, legacyConsultation.id);
+      db.prepare("UPDATE consultations SET id = ? WHERE id = ?").run(nextId, legacyConsultation.id);
+
+      // Delete the obsolete remote row before syncing the repaired row.
+      queueSupabaseConsultationSync(db, "delete", legacyConsultation);
+      queueSupabaseConsultationSync(db, "upsert", nextConsultation);
+    });
+
+    db.exec("COMMIT");
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // The transaction may not have begun yet.
+    }
+
+    throw error;
+  }
 }
 
 function normalizeConsultationInput(input, config, fallback = {}) {
@@ -4503,7 +4544,7 @@ async function syncPendingSupabaseJobs(config, limit = 20) {
     const jobs = db.prepare(`
       SELECT *
       FROM supabase_sync_jobs
-      ORDER BY created_at ASC
+      ORDER BY created_at ASC, rowid ASC
       LIMIT ?
     `).all(limit);
 
@@ -4696,7 +4737,7 @@ async function handleConsultationCreate(request, response, config) {
 
   const body = await readJsonBody(request);
   const consultation = normalizeConsultationInput(
-    { ...body, id: Number.isFinite(Number(body.id)) ? Number(body.id) : nextCentralConsultationId(db) },
+    { ...body, id: nextCentralConsultationId(db) },
     config,
   );
 

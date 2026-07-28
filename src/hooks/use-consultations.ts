@@ -22,6 +22,7 @@ import type { Consultation, ConsultationResult, PatientType } from "@/types/doma
 const consultationStorageKey = "dental-consult-consultations-v1";
 const deletedConsultationIdsStorageKey = "dental-consult-deleted-consultation-ids-v1";
 const consultationStorageChangedEvent = "dental-consult-consultations-changed";
+const clientGeneratedConsultationIdFloor = 1_000_000_000_000;
 let lastOfflineConsultationId = 0;
 
 type ConsultationInput = Omit<Consultation, "id">;
@@ -201,6 +202,36 @@ function getServerClinicId(clinicId?: string) {
   return clinicId ?? getActiveLocalApiClinic()?.id ?? defaultConsultationClinicId;
 }
 
+function isSameConsultationRecord(first: Consultation, second: Consultation) {
+  return (
+    first.date === second.date &&
+    first.patientName === second.patientName &&
+    first.chartNo === second.chartNo &&
+    first.treatmentCategory === second.treatmentCategory &&
+    first.consultationAmount === second.consultationAmount &&
+    first.agreedAmount === second.agreedAmount
+  );
+}
+
+function clearMigratedLocalConsultations(serverConsultations: Consultation[]) {
+  const storedConsultations = readStoredConsultations();
+  const nextStoredConsultations = storedConsultations.filter((consultation) => {
+    if (consultation.id < clientGeneratedConsultationIdFloor) {
+      return true;
+    }
+
+    return !serverConsultations.some(
+      (serverConsultation) =>
+        serverConsultation.id < clientGeneratedConsultationIdFloor &&
+        isSameConsultationRecord(consultation, serverConsultation),
+    );
+  });
+
+  if (nextStoredConsultations.length !== storedConsultations.length) {
+    writeStoredConsultations(nextStoredConsultations);
+  }
+}
+
 async function readServerConsultations(clinicId?: string) {
   const serverClinicId = getServerClinicId(clinicId);
   const serverClinic = getActiveLocalApiClinic();
@@ -210,9 +241,13 @@ async function readServerConsultations(clinicId?: string) {
       `/app-data/consultations?clinicId=${encodeURIComponent(serverClinicId)}`,
     );
 
-    return (payload.consultations ?? [])
+    const consultations = (payload.consultations ?? [])
       .map(normalizeConsultation)
       .filter((consultation): consultation is Consultation => Boolean(consultation));
+
+    clearMigratedLocalConsultations(consultations);
+
+    return consultations;
   } catch {
     const supabaseConsultations = await readSupabaseConsultations({
       clinicId: serverClinicId,
@@ -335,7 +370,7 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
 
     try {
       const payload = await fetchLocalApiJson<ConsultationMutationApiResponse>("/app-data/consultations", {
-        body: JSON.stringify(optimisticConsultation),
+        body: JSON.stringify(serverInput),
         method: "POST",
       });
       const serverConsultation = normalizeConsultation(payload.consultation);
