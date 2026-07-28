@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { ArrowRight, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { signInAction } from "./actions";
+import { LoginSubmitButton } from "./login-submit-button";
 
 type LoginPageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -49,7 +50,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           </div>
         ) : null}
 
-        <form className="mt-8 space-y-4">
+        <form action={signInAction} className="mt-8 space-y-4">
           <label className="block space-y-2">
             <span className="text-sm font-bold text-slate">이메일</span>
             <input
@@ -72,13 +73,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
               className="h-12 w-full rounded-md border border-pebble px-4 outline-none transition focus:border-monday-violet"
             />
           </label>
-          <button
-            formAction={signInAction}
-            className="flex h-12 w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-monday-violet px-5 text-sm font-bold text-white transition hover:brightness-95"
-          >
-            로그인
-            <ArrowRight className="h-4 w-4" aria-hidden />
-          </button>
+          <LoginSubmitButton />
         </form>
 
         {!isSupabaseConfigured ? (

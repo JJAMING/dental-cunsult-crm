@@ -80,6 +80,19 @@ textarea {
   letter-spacing: 0;
 }
 
+button:not(:disabled):not([aria-disabled="true"]),
+a[href],
+summary,
+[role="button"]:not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+
+button:disabled,
+button[aria-disabled="true"],
+[role="button"][aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
 ::selection {
   background: rgba(97, 97, 255, 0.18);
 }
