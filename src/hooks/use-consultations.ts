@@ -330,8 +330,9 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
 
         return serverConsultation;
       }
+      throw new Error("local_api_invalid_consultation_response");
     } catch {
-      // Fall back to browser storage when the server PC API is not available.
+      // Preserve the entry locally when the server PC is temporarily unavailable.
     }
 
     try {
@@ -343,23 +344,12 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
 
         return supabaseConsultation;
       }
-    } catch (error) {
-      if (isSupabaseConfigured()) {
-        throw new Error(
-          error instanceof Error
-            ? `Supabase 상담일지 저장 실패: ${error.message}`
-            : "Supabase 상담일지 저장에 실패했습니다.",
-        );
-      }
-    }
-
-    if (isSupabaseConfigured()) {
-      throw new Error("Supabase 로그인 세션을 확인하지 못해 상담일지를 저장하지 못했습니다.");
+    } catch {
+      // The local fallback below keeps a completed form from disappearing.
     }
 
     const consultation: Consultation = {
-      ...input,
-      clinicId: input.clinicId ?? defaultConsultationClinicId,
+      ...serverInput,
       id: nextId,
     };
 

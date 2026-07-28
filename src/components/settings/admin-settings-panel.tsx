@@ -86,6 +86,11 @@ type DentwebHealthResponse = {
   ok?: boolean;
 };
 
+type DentwebSqlServerConnectionTestResponse = {
+  message?: string;
+  ok?: boolean;
+};
+
 type DentwebClinicResponse = {
   clinic?: {
     id?: string;
@@ -1278,6 +1283,7 @@ function DentwebModeSettingsModal({
     status: "idle",
     message: "아직 서버 연결 테스트를 하지 않았습니다.",
   });
+  const [showAdvancedSetup, setShowAdvancedSetup] = useState(false);
   const [clientApprovalState, setClientApprovalState] = useState<DentwebClientApprovalState>({
     status: "idle",
     message: "서버 승인 대기 목록을 아직 불러오지 않았습니다.",
@@ -2034,7 +2040,7 @@ function DentwebModeSettingsModal({
 
     setClientApprovalState({
       status: "loading",
-      message: "서버 승인 요청 목록을 불러오고 있습니다.",
+      message: "연결된 클라이언트 목록을 불러오고 있습니다.",
       clients: clientApprovalState.clients,
       serverUrl,
     });
@@ -2047,8 +2053,8 @@ function DentwebModeSettingsModal({
         status: "success",
         message:
           clients.length > 0
-            ? `클라이언트 요청 ${clients.length}개를 확인했습니다.`
-            : "현재 승인 대기 중인 클라이언트 요청이 없습니다.",
+            ? `연결된 클라이언트 ${clients.length}대를 확인했습니다.`
+            : "연결된 클라이언트가 없습니다.",
         clients,
         serverUrl,
       });
@@ -2059,39 +2065,6 @@ function DentwebModeSettingsModal({
         clients: [],
         serverUrl,
       });
-    }
-  };
-
-  const updateClientApproval = async (deviceId: string, action: "approve" | "reject") => {
-    const serverUrl = buildDentwebApiBaseUrl(draftSettings.serverHost, draftSettings.serverPort);
-
-    setClientApprovalState((current) => ({
-      ...current,
-      status: "loading",
-      message: action === "approve" ? "클라이언트 연결을 승인하고 있습니다." : "클라이언트 요청을 거절하고 있습니다.",
-      serverUrl,
-    }));
-
-    try {
-      await fetchJsonWithTimeout(`${serverUrl}/clients/${encodeURIComponent(deviceId)}/${action}`, {
-        method: "POST",
-      });
-      const response = await fetchJsonWithTimeout<DentwebClientsResponse>(`${serverUrl}/clients`);
-      const clients = Array.isArray(response.clients) ? response.clients : [];
-
-      setClientApprovalState({
-        status: "success",
-        message: action === "approve" ? "클라이언트 연결을 승인했습니다." : "클라이언트 요청을 거절했습니다.",
-        clients,
-        serverUrl,
-      });
-    } catch (error) {
-      setClientApprovalState((current) => ({
-        ...current,
-        status: "error",
-        message: getErrorMessage(error),
-        serverUrl,
-      }));
     }
   };
 
@@ -2116,10 +2089,9 @@ function DentwebModeSettingsModal({
         body: JSON.stringify({
           deviceId,
           deviceName: `${clinicName} 클라이언트`,
-          pairingCode: draftSettings.pairingCode,
         }),
       });
-      const registrationStatus = registration.status ?? registration.device?.status ?? "pending_approval";
+      const registrationStatus = registration.status ?? registration.device?.status ?? "approved";
       const confirmedClinicName = clinic.clinic?.name ?? health.clinicName ?? clinicName;
 
       saveLocalApiClientCredentials({
@@ -2129,12 +2101,74 @@ function DentwebModeSettingsModal({
         status: registrationStatus,
         token: registration.device?.token,
       });
+      updateDentwebIntegrationForClinic(clinicId, {
+        ...draftSettings,
+        mode: "client",
+        pairingCode: "",
+        serverHost: draftSettings.serverHost.trim() || "127.0.0.1",
+        serverPort: draftSettings.serverPort > 0 ? draftSettings.serverPort : 34254,
+      });
 
       setConnectionCheck({
         status: "success",
-        message: registration.message ?? "서버 연결과 클라이언트 등록 요청이 완료됐습니다.",
+        message: "치과 서버에 연결되었습니다. 서버 PC의 별도 승인은 필요하지 않습니다.",
         clinicName: confirmedClinicName,
         registrationStatus,
+        serverUrl,
+      });
+    } catch (error) {
+      setConnectionCheck({
+        status: "error",
+        message: getErrorMessage(error),
+        serverUrl,
+      });
+    }
+  };
+
+  const prepareServerPc = async () => {
+    const serverUrl = buildDentwebApiBaseUrl(draftSettings.serverHost, draftSettings.serverPort);
+
+    setConnectionCheck({
+      status: "checking",
+      message: "서버 PC와 덴트웹 연결을 확인하고 첫 동기화를 준비하고 있습니다.",
+      serverUrl,
+    });
+
+    try {
+      const [health, sqlConnection] = await Promise.all([
+        fetchJsonWithTimeout<DentwebHealthResponse>(`${serverUrl}/health`),
+        fetchJsonWithTimeout<DentwebSqlServerConnectionTestResponse>(
+          `${serverUrl}/dentweb/sql-server-connection-test`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+          12_000,
+        ),
+      ]);
+
+      if (!health.ok || !sqlConnection.ok) {
+        throw new Error(sqlConnection.message ?? "덴트웹 SQL Server 연결을 확인하지 못했습니다.");
+      }
+
+      const sync = await fetchJsonWithTimeout<DentwebSyncNowResponse>(
+        `${serverUrl}/dentweb/sync-now`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+        20_000,
+      );
+
+      if (!sync.ok) {
+        throw new Error(sync.message ?? "덴트웹 첫 동기화에 실패했습니다.");
+      }
+
+      updateDentwebIntegrationForClinic(clinicId, {
+        ...draftSettings,
+        mode: "server",
+        pairingCode: "",
+        serverHost: draftSettings.serverHost.trim() || "127.0.0.1",
+        serverPort: draftSettings.serverPort > 0 ? draftSettings.serverPort : 34254,
+      });
+      setConnectionCheck({
+        status: "success",
+        message: "서버 PC 준비가 완료되었습니다. 덴트웹 연결과 첫 동기화가 정상입니다.",
+        clinicName: health.clinicName ?? clinicName,
         serverUrl,
       });
     } catch (error) {
@@ -2236,6 +2270,102 @@ function DentwebModeSettingsModal({
             })}
           </div>
 
+          <div className="rounded-[20px] border border-monday-violet/25 bg-white p-4 shadow-[rgba(97,97,255,0.06)_0_12px_28px]">
+            {draftSettings.mode === "server" ? (
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-base font-bold text-ink">서버 PC 준비</p>
+                  <p className="mt-1 text-sm leading-6 text-slate">
+                    덴트웹 연결 확인과 첫 동기화를 한 번에 실행합니다.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={prepareServerPc}
+                  disabled={connectionCheck.status === "checking"}
+                  className="inline-flex h-11 shrink-0 items-center justify-center rounded-full bg-monday-violet px-5 text-sm font-bold text-white transition hover:brightness-95 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {connectionCheck.status === "checking" ? "준비 중" : "서버 PC 준비"}
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div>
+                  <p className="text-base font-bold text-ink">치과 서버에 연결</p>
+                  <p className="mt-1 text-sm leading-6 text-slate">
+                    서버 PC 주소를 확인한 뒤 한 번만 연결하면 됩니다. 서버 PC 승인 단계는 없습니다.
+                  </p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-[1fr_9rem_auto]">
+                  <input
+                    value={draftSettings.serverHost}
+                    onChange={(event) =>
+                      setDraftSettings((current) => ({ ...current, serverHost: event.target.value }))
+                    }
+                    placeholder="서버 PC IP 주소"
+                    className={inputClass}
+                  />
+                  <input
+                    inputMode="numeric"
+                    value={formatNumber(draftSettings.serverPort)}
+                    onChange={(event) =>
+                      setDraftSettings((current) => ({
+                        ...current,
+                        serverPort: parseNumberInput(event.target.value),
+                      }))
+                    }
+                    placeholder="34254"
+                    className={inputClass}
+                  />
+                  <button
+                    type="button"
+                    onClick={testClientConnection}
+                    disabled={connectionCheck.status === "checking"}
+                    className="inline-flex h-10 shrink-0 items-center justify-center rounded-full bg-monday-violet px-4 text-sm font-bold text-white transition hover:brightness-95 disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {connectionCheck.status === "checking" ? "연결 중" : "치과 서버에 연결"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div
+              className={[
+                "mt-4 rounded-[14px] border px-3 py-2.5",
+                connectionCheck.status === "success"
+                  ? "border-[#b7edc4] bg-[#f0fff4]"
+                  : connectionCheck.status === "error"
+                    ? "border-[#ffd0d0] bg-[#fff5f5]"
+                    : "border-pebble bg-cloud",
+              ].join(" ")}
+            >
+              <p
+                className={[
+                  "text-sm font-bold",
+                  connectionCheck.status === "success"
+                    ? "text-[#146c2e]"
+                    : connectionCheck.status === "error"
+                      ? "text-[#ad1f3d]"
+                      : "text-slate",
+                ].join(" ")}
+              >
+                {connectionCheck.message}
+              </p>
+              {connectionCheck.serverUrl ? (
+                <p className="metric-number mt-1 text-xs font-bold text-slate">서버: {connectionCheck.serverUrl}</p>
+              ) : null}
+            </div>
+          </div>
+
+          <details
+            open={showAdvancedSetup}
+            onToggle={(event) => setShowAdvancedSetup(event.currentTarget.open)}
+            className="rounded-[20px] border border-mist bg-white"
+          >
+            <summary className="cursor-pointer px-4 py-3 text-sm font-bold text-slate transition hover:text-monday-violet">
+              고급 연결 설정 및 진단
+            </summary>
+            <div className="space-y-4 border-t border-mist p-4">
           <div className="grid gap-3 rounded-[20px] border border-mist bg-white p-4 md:grid-cols-2">
             <label className="space-y-2">
               <span className="text-xs font-bold text-slate">
@@ -3388,9 +3518,9 @@ function DentwebModeSettingsModal({
             <div className="rounded-[20px] border border-mist bg-white p-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div>
-                  <p className="text-sm font-bold text-ink">클라이언트 승인 대기</p>
+                  <p className="text-sm font-bold text-ink">연결된 클라이언트</p>
                   <p className="mt-1 text-sm leading-6 text-slate">
-                    접수 PC, 상담 PC, 원장실 PC에서 보낸 연동 요청을 서버 PC에서 승인하거나 거절합니다.
+                    같은 내부망에서 연결한 기기를 확인합니다. 새 기기는 자동으로 연결됩니다.
                   </p>
                 </div>
                 <button
@@ -3399,7 +3529,7 @@ function DentwebModeSettingsModal({
                   disabled={clientApprovalState.status === "loading"}
                   className="inline-flex h-10 shrink-0 items-center justify-center rounded-full border border-pebble bg-white px-4 text-sm font-bold text-slate transition hover:border-monday-violet hover:text-monday-violet disabled:cursor-wait disabled:opacity-60"
                 >
-                  {clientApprovalState.status === "loading" ? "확인 중" : "요청 새로고침"}
+                  {clientApprovalState.status === "loading" ? "확인 중" : "기기 목록 새로고침"}
                 </button>
               </div>
 
@@ -3435,8 +3565,6 @@ function DentwebModeSettingsModal({
               {clientApprovalState.clients.length > 0 ? (
                 <div className="mt-4 space-y-2">
                   {clientApprovalState.clients.map((client) => {
-                    const isPending = client.status === "pending_approval";
-
                     return (
                       <div
                         key={client.id}
@@ -3467,30 +3595,9 @@ function DentwebModeSettingsModal({
                         </div>
 
                         <div className="flex items-center gap-2">
-                          {isPending ? (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => updateClientApproval(client.id, "approve")}
-                                disabled={clientApprovalState.status === "loading"}
-                                className="inline-flex h-9 items-center justify-center rounded-full bg-monday-violet px-4 text-sm font-bold text-white transition hover:brightness-95 disabled:cursor-wait disabled:opacity-60"
-                              >
-                                승인
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => updateClientApproval(client.id, "reject")}
-                                disabled={clientApprovalState.status === "loading"}
-                                className="inline-flex h-9 items-center justify-center rounded-full border border-pebble bg-white px-4 text-sm font-bold text-slate transition hover:border-[#ad1f3d] hover:text-[#ad1f3d] disabled:cursor-wait disabled:opacity-60"
-                              >
-                                거절
-                              </button>
-                            </>
-                          ) : (
-                            <span className="rounded-full bg-cloud px-3 py-2 text-xs font-bold text-slate">
-                              {getDentwebClientStatusLabel(client.status)}
-                            </span>
-                          )}
+                          <span className="rounded-full bg-cloud px-3 py-2 text-xs font-bold text-slate">
+                            {getDentwebClientStatusLabel(client.status)}
+                          </span>
                         </div>
                       </div>
                     );
@@ -3564,10 +3671,12 @@ function DentwebModeSettingsModal({
             </p>
             <p className="mt-2 text-sm leading-6 text-slate">
               {draftSettings.mode === "server"
-                ? "덴트웹 서버찾기, 서버 PC 중앙 DB, 클라이언트 승인 흐름을 이 설정에서 확인할 수 있습니다."
-                : "입력한 서버 앱 주소로 연결 테스트와 클라이언트 등록 요청을 보낼 수 있습니다."}
+                ? "덴트웹 서버찾기와 중앙 DB 진단은 고급 설정에서 확인할 수 있습니다. 클라이언트는 승인 없이 자동 연결됩니다."
+                : "입력한 서버 앱 주소로 연결하면 이 PC는 자동으로 등록됩니다."}
             </p>
           </div>
+            </div>
+          </details>
         </div>
 
         <div className="flex justify-end gap-2 border-t border-mist px-5 py-4">

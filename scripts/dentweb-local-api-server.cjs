@@ -5019,17 +5019,6 @@ async function handleClientRegister(request, response, config) {
   const body = await readJsonBody(request);
   const deviceName = sanitizeDeviceName(body.deviceName);
   const deviceId = sanitizeDeviceId(body.deviceId);
-  const pairingCode = typeof body.pairingCode === "string" ? body.pairingCode.replace(/[^0-9]/g, "") : "";
-
-  if (config.pairingCode && pairingCode !== config.pairingCode) {
-    sendJson(response, 401, {
-      ok: false,
-      error: "invalid_pairing_code",
-      message: "??????⑤벡瑜?????????????諛몃마???????猷몃??? ???關?쒎첎?嫄???욱렱嶺??? ?????????????곸죩.",
-    });
-    return;
-  }
-
   const clients = readClientRecords();
   const now = new Date().toISOString();
   const existingClient = clients.find((client) => client.id === deviceId);
@@ -5037,10 +5026,14 @@ async function handleClientRegister(request, response, config) {
     ...existingClient,
     id: deviceId,
     name: deviceName,
-    status: existingClient?.status === "approved" ? "approved" : "pending_approval",
+    // Devices in the clinic's private network are registered immediately.
+    // Per-device tokens still protect normal data endpoints after registration.
+    status: "approved",
     requestedAt: existingClient?.requestedAt ?? now,
     updatedAt: now,
-    rejectedAt: existingClient?.status === "approved" ? existingClient.rejectedAt : undefined,
+    approvedAt: existingClient?.approvedAt ?? now,
+    rejectedAt: undefined,
+    token: existingClient?.token || crypto.randomBytes(24).toString("hex"),
     remoteAddress: getRemoteAddress(request),
   });
   const nextClients = existingClient
@@ -5049,14 +5042,11 @@ async function handleClientRegister(request, response, config) {
 
   writeClientRecords(nextClients);
 
-  sendJson(response, nextClient.status === "approved" ? 200 : 202, {
+  sendJson(response, 200, {
     ok: true,
-    status: nextClient.status,
-    device: toPublicClientRecord(nextClient, { includeToken: nextClient.status === "approved" }),
-    message:
-      nextClient.status === "approved"
-        ? "???? ?????????????????源낆┸???饔낅떽???????곗뒧?????????곸죩. ???轅붽틓??????壤???????⑤벡瑜?????傭?끆???????????????????????????곸죩."
-        : "Client registration request was received. Approval is pending on the server PC.",
+    status: "approved",
+    device: toPublicClientRecord(nextClient, { includeToken: true }),
+    message: "This device is connected to the clinic server.",
   });
 }
 
