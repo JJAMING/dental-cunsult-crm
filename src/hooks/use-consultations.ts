@@ -162,7 +162,7 @@ function getStoredConsultationsSnapshot() {
 }
 
 function nextOfflineConsultationId() {
-  const now = Date.now();
+  const now = Date.now() * 1000 + Math.floor(Math.random() * 1000);
 
   lastOfflineConsultationId = Math.max(now, lastOfflineConsultationId + 1);
 
@@ -324,15 +324,27 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
       clinicId: input.clinicId ?? serverClinic?.id ?? defaultConsultationClinicId,
       clinicName: input.clinicName ?? serverClinic?.name,
     };
+    const optimisticConsultation: Consultation = {
+      ...serverInput,
+      id: nextId,
+    };
+
+    // Keep the completed form visible immediately, even when the first server request
+    // arrives while the local agent or network connection is still warming up.
+    writeStoredConsultations(upsertConsultation(currentConsultations, optimisticConsultation));
+
     try {
       const payload = await fetchLocalApiJson<ConsultationMutationApiResponse>("/app-data/consultations", {
-        body: JSON.stringify(serverInput),
+        body: JSON.stringify(optimisticConsultation),
         method: "POST",
       });
       const serverConsultation = normalizeConsultation(payload.consultation);
 
       if (serverConsultation) {
-        writeStoredConsultations(upsertConsultation(currentConsultations, serverConsultation));
+        const storedAfterOptimisticWrite = readStoredConsultations().filter(
+          (consultation) => consultation.id !== optimisticConsultation.id,
+        );
+        writeStoredConsultations(upsertConsultation(storedAfterOptimisticWrite, serverConsultation));
         setServerConsultations((current) => upsertConsultation(current ?? [], serverConsultation));
 
         return serverConsultation;
@@ -346,7 +358,10 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
       const supabaseConsultation = await createSupabaseConsultation(serverInput, nextId);
 
       if (supabaseConsultation) {
-        writeStoredConsultations(upsertConsultation(currentConsultations, supabaseConsultation));
+        const storedAfterOptimisticWrite = readStoredConsultations().filter(
+          (consultation) => consultation.id !== optimisticConsultation.id,
+        );
+        writeStoredConsultations(upsertConsultation(storedAfterOptimisticWrite, supabaseConsultation));
         setServerConsultations((current) => upsertConsultation(current ?? [], supabaseConsultation));
 
         return supabaseConsultation;
@@ -355,14 +370,7 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
       // The local fallback below keeps a completed form from disappearing.
     }
 
-    const consultation: Consultation = {
-      ...serverInput,
-      id: nextId,
-    };
-
-    writeStoredConsultations(upsertConsultation(currentConsultations, consultation));
-
-    return consultation;
+    return optimisticConsultation;
   }, []);
 
   const updateConsultation = useCallback(async (consultationId: number, input: ConsultationInput) => {
