@@ -1035,8 +1035,17 @@ export function ConsultationFormDialog({
                                     .filter(Boolean)
                                     .join(" · ") || "예약 상태 정보 없음"}
                                 </p>
+                                {appointment.appointmentNote ? (
+                                  <p className="mt-2 line-clamp-2 text-ink">
+                                    <span className="mr-1 font-bold text-slate">예약내용</span>
+                                    {appointment.appointmentNote}
+                                  </p>
+                                ) : null}
                                 {appointment.memo ? (
-                                  <p className="mt-1 line-clamp-2 text-iron">{appointment.memo}</p>
+                                  <p className="mt-1 line-clamp-2 text-iron">
+                                    <span className="mr-1 font-bold text-slate">예약메모</span>
+                                    {appointment.memo}
+                                  </p>
                                 ) : null}
                               </div>
                             ))}

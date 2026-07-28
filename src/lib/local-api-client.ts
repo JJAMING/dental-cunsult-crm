@@ -46,6 +46,7 @@ export type LocalApiRuntimeStatus = {
 export type DentwebSnapshotAppointment = {
   appointmentDate?: string;
   appointmentTime?: string;
+  appointmentNote?: string;
   chartNo?: string;
   doctor?: string;
   id?: number | string;

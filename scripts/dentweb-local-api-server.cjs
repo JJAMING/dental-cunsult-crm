@@ -2746,6 +2746,15 @@ function mapDentwebAppointmentSnapshotRow(row) {
     appointmentTime: pickText(raw, ["appointmentTime", "appointment_time", "reservationTime", "time", "Time"]),
     doctor: pickText(raw, ["doctor", "doctorName", "doctor_name", "dr", "provider", "staff"]),
     status: pickText(raw, ["status", "state", "reservationStatus", "appointmentStatus", "type"]),
+    appointmentNote: pickText(raw, [
+      "appointmentNote",
+      "appointment_note",
+      "reservationContent",
+      "reservationDetail",
+      "appointmentContent",
+      "content",
+      "detail",
+    ]),
     memo: pickText(raw, [
       "memo",
       "note",
