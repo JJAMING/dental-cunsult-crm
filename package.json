@@ -1,6 +1,6 @@
 {
   "name": "dental-consult-crm",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Dental consultation and Dentweb-connected CRM",
   "author": "Dental Consult CRM",
   "private": true,
@@ -14,7 +14,7 @@
     "desktop": "electron .",
     "desktop:local": "set DENTAL_CONSULT_APP_URL=http://127.0.0.1:3100&& electron .",
     "desktop:dist": "electron-builder --win nsis",
-    "release:desktop": "electron-builder --win nsis --publish always",
+    "release:desktop": "electron-builder --win nsis",
     "supabase": "supabase",
     "supabase:start": "supabase start",
     "supabase:stop": "supabase stop",

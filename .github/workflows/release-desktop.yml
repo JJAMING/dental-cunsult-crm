@@ -37,7 +37,15 @@ jobs:
             throw "Tag ${{ github.ref_name }} must match package version v$version."
           }
 
-      - name: Build and publish installer
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build installer
         run: npm run release:desktop
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Dental Consult CRM Setup *.exe
+            dist/Dental Consult CRM Setup *.exe.blockmap
+            dist/latest.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
