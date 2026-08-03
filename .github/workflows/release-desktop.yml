@@ -35,6 +35,8 @@ jobs:
 
       - name: Build installer
         shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
           $env:PATH = "C:\Windows\System32\WindowsPowerShell\v1.0;$env:PATH"
           npm run release:desktop
