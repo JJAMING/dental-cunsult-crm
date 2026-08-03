@@ -27,10 +27,31 @@ type DesktopLocalApiResponse = {
   status: number;
 };
 
+export type DesktopUpdateStatus = {
+  availableVersion: string;
+  currentVersion: string;
+  message: string;
+  progress: number;
+  state:
+    | "available"
+    | "checking"
+    | "current"
+    | "downloaded"
+    | "downloading"
+    | "error"
+    | "idle"
+    | "installing"
+    | "unsupported";
+};
+
 declare global {
   interface Window {
     dentalConsultDesktop?: {
+      checkForUpdate(): Promise<DesktopUpdateStatus>;
+      getUpdateStatus(): Promise<DesktopUpdateStatus>;
+      installUpdate(): Promise<{ ok: boolean; status: DesktopUpdateStatus }>;
       requestLocalApi(request: DesktopLocalApiRequest): Promise<DesktopLocalApiResponse>;
+      subscribeToUpdateStatus(listener: (status: DesktopUpdateStatus) => void): () => void;
     };
   }
 }

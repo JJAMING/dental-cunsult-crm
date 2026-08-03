@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const { app, BrowserWindow, ipcMain, session } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -12,6 +13,15 @@ const localApiPort = Number(process.env.DENTAL_CONSULT_LOCAL_API_PORT || 34254);
 const isServerAgentMode = process.argv.includes("--agent");
 let serverAgentProcess;
 let serverAgentHeartbeat;
+let updateCheckTimer;
+let updateCheckInProgress = false;
+let desktopUpdateStatus = {
+  availableVersion: "",
+  currentVersion: app.getVersion(),
+  message: "",
+  progress: 0,
+  state: "idle",
+};
 
 function getAppOrigin() {
   return new URL(appUrl).origin;
@@ -89,6 +99,113 @@ function createMainWindow() {
     }
   });
   void window.loadURL(appUrl);
+}
+
+function getDesktopUpdateStatus() {
+  return { ...desktopUpdateStatus };
+}
+
+function broadcastDesktopUpdateStatus() {
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send("dental-consult:update-status", getDesktopUpdateStatus());
+  }
+}
+
+function setDesktopUpdateStatus(nextStatus) {
+  desktopUpdateStatus = {
+    ...desktopUpdateStatus,
+    ...nextStatus,
+  };
+  broadcastDesktopUpdateStatus();
+}
+
+function canUseAutoUpdates() {
+  return app.isPackaged && !isServerAgentMode && process.env.DENTAL_CONSULT_DISABLE_AUTO_UPDATE !== "1";
+}
+
+async function checkForDesktopUpdate() {
+  if (!canUseAutoUpdates() || updateCheckInProgress) {
+    return getDesktopUpdateStatus();
+  }
+
+  updateCheckInProgress = true;
+  setDesktopUpdateStatus({ message: "", progress: 0, state: "checking" });
+
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch (error) {
+    setDesktopUpdateStatus({
+      message: error instanceof Error ? error.message : "update_check_failed",
+      state: "error",
+    });
+  } finally {
+    updateCheckInProgress = false;
+  }
+
+  return getDesktopUpdateStatus();
+}
+
+function stopScheduledServerAgentForUpdate() {
+  if (!readServerAgentConfig()) {
+    return;
+  }
+
+  try {
+    childProcess.spawnSync("schtasks.exe", ["/End", "/TN", "Dental Consult CRM Server Agent"], {
+      stdio: "ignore",
+      timeout: 8000,
+      windowsHide: true,
+    });
+  } catch {
+    // The app can still update when the scheduled task is not installed.
+  }
+}
+
+function installDownloadedDesktopUpdate() {
+  if (!canUseAutoUpdates() || desktopUpdateStatus.state !== "downloaded") {
+    return { ok: false, status: getDesktopUpdateStatus() };
+  }
+
+  setDesktopUpdateStatus({ state: "installing" });
+  stopBundledServerAgent();
+  stopScheduledServerAgentForUpdate();
+  autoUpdater.quitAndInstall(false, true);
+
+  return { ok: true, status: getDesktopUpdateStatus() };
+}
+
+function configureAutoUpdates() {
+  if (!canUseAutoUpdates()) {
+    setDesktopUpdateStatus({ state: "unsupported" });
+    return;
+  }
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = false;
+
+  autoUpdater.on("checking-for-update", () => {
+    setDesktopUpdateStatus({ message: "", progress: 0, state: "checking" });
+  });
+  autoUpdater.on("update-available", (info) => {
+    setDesktopUpdateStatus({ availableVersion: info.version, progress: 0, state: "downloading" });
+  });
+  autoUpdater.on("update-not-available", () => {
+    setDesktopUpdateStatus({ message: "", progress: 0, state: "current" });
+  });
+  autoUpdater.on("download-progress", (progress) => {
+    setDesktopUpdateStatus({ progress: Math.round(progress.percent), state: "downloading" });
+  });
+  autoUpdater.on("update-downloaded", (info) => {
+    setDesktopUpdateStatus({ availableVersion: info.version, progress: 100, state: "downloaded" });
+  });
+  autoUpdater.on("error", (error) => {
+    setDesktopUpdateStatus({ message: error.message, state: "error" });
+  });
+
+  void checkForDesktopUpdate();
+  updateCheckTimer = setInterval(() => {
+    void checkForDesktopUpdate();
+  }, 6 * 60 * 60 * 1000);
 }
 
 function getBundledAgentPath() {
@@ -257,7 +374,32 @@ app.whenReady().then(async () => {
     };
   });
 
+  ipcMain.handle("dental-consult:update-status", (event) => {
+    if (!isTrustedRendererUrl(event.senderFrame.url)) {
+      throw new Error("untrusted_renderer");
+    }
+
+    return getDesktopUpdateStatus();
+  });
+
+  ipcMain.handle("dental-consult:update-check", async (event) => {
+    if (!isTrustedRendererUrl(event.senderFrame.url)) {
+      throw new Error("untrusted_renderer");
+    }
+
+    return checkForDesktopUpdate();
+  });
+
+  ipcMain.handle("dental-consult:update-install", (event) => {
+    if (!isTrustedRendererUrl(event.senderFrame.url)) {
+      throw new Error("untrusted_renderer");
+    }
+
+    return installDownloadedDesktopUpdate();
+  });
+
   createMainWindow();
+  configureAutoUpdates();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -272,4 +414,10 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", stopBundledServerAgent);
+app.on("before-quit", () => {
+  if (updateCheckTimer) {
+    clearInterval(updateCheckTimer);
+  }
+
+  stopBundledServerAgent();
+});

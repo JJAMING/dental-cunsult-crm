@@ -1,6 +1,6 @@
 {
   "name": "dental-consult-crm",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Dental consultation and Dentweb-connected CRM",
   "author": "Dental Consult CRM",
   "private": true,
@@ -14,6 +14,7 @@
     "desktop": "electron .",
     "desktop:local": "set DENTAL_CONSULT_APP_URL=http://127.0.0.1:3100&& electron .",
     "desktop:dist": "electron-builder --win nsis",
+    "release:desktop": "electron-builder --win nsis --publish always",
     "supabase": "supabase",
     "supabase:start": "supabase start",
     "supabase:stop": "supabase stop",
@@ -39,6 +40,15 @@
         "to": "agent/setup-dentweb-server.ps1"
       }
     ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "JJAMING",
+        "repo": "dental-cunsult-crm",
+        "releaseType": "release",
+        "vPrefixedTagName": true
+      }
+    ],
     "win": {
       "target": [
         "nsis"
@@ -48,6 +58,7 @@
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
     "@supabase/supabase-js": "^2.108.2",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^1.21.0",
     "mssql": "^12.7.0",
     "next": "16.2.9",
