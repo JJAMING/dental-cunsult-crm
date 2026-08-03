@@ -848,13 +848,13 @@ async function queryDentwebPatientAppointmentsLive(config, input = {}) {
 
 async function queryDentwebRecallCandidatesLive(config, input = {}) {
   const limit = clampLimit(input.limit, 30, 80);
-  const scanLimit = Math.min(Math.max(limit * 8, 160), 600);
   const nowDateTime = getKoreanDateTimeDigits();
 
   return withDentwebSqlServer(config, async ({ sql, pool }) => {
     const result = await pool
       .request()
-      .input("limit", sql.Int, scanLimit)
+      .input("limit", sql.Int, limit)
+      .input("nowDateTime", sql.VarChar(12), nowDateTime)
       .query(`
         SELECT TOP (@limit)
           appointment.[n환자ID] AS [patientId],
@@ -870,7 +870,20 @@ async function queryDentwebRecallCandidatesLive(config, input = {}) {
           ON patient.[n환자ID] = appointment.[n환자ID]
         LEFT JOIN [dbo].[PUB_V직원정보] AS doctor
           ON doctor.[nID] = appointment.[n담당의사]
-        WHERE appointment.[n이행현황] IN (0, 2, 3)
+        WHERE (
+          appointment.[n이행현황] IN (2, 3)
+          OR (
+            appointment.[n이행현황] = 0
+            AND appointment.[sz예약시각] <= @nowDateTime
+          )
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM [dbo].[PUB_V예약정보] AS future_appointment
+          WHERE future_appointment.[n환자ID] = appointment.[n환자ID]
+            AND future_appointment.[n이행현황] = 0
+            AND future_appointment.[sz예약시각] > @nowDateTime
+        )
         ORDER BY appointment.[sz예약시각] DESC;
       `);
 
