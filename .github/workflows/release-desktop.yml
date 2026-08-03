@@ -22,10 +22,6 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Prepare Windows build tools
-        shell: pwsh
-        run: '"C:\Windows\System32\WindowsPowerShell\v1.0" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
-
       - name: Install dependencies
         run: npm install --ignore-scripts --no-audit --no-fund
 
@@ -38,7 +34,10 @@ jobs:
           }
 
       - name: Build installer
-        run: npm run release:desktop
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Windows\System32\WindowsPowerShell\v1.0;$env:PATH"
+          npm run release:desktop
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
