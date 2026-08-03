@@ -33,6 +33,12 @@ type RecallDialogTarget = {
 type ViewMode = "year" | "month" | "week" | "day";
 export type RecallListMode = "declined" | "opportunity" | "goldenTime" | "partialRecontact";
 
+type DentwebCandidatePeriod = {
+  fromDate: string;
+  label: string;
+  toDate: string;
+};
+
 type RecallEntryDialogProps = {
   target: RecallDialogTarget;
   record?: RecallRecord;
@@ -157,6 +163,48 @@ function getWeekOptions(year: number, month: number) {
       endDay,
     };
   });
+}
+
+function getDentwebCandidatePeriod(
+  viewMode: ViewMode,
+  selectedYear: number,
+  selectedMonth: number,
+  selectedWeek: { endDay: number; label: string; startDay: number },
+  selectedDate: string,
+): DentwebCandidatePeriod {
+  const toDateDigits = (year: number, month: number, day: number) =>
+    `${year}${String(month).padStart(2, "0")}${String(day).padStart(2, "0")}`;
+
+  if (viewMode === "day") {
+    const { year, month, day } = getDateParts(selectedDate);
+    const date = toDateDigits(year, month, day);
+
+    return { fromDate: date, label: formatDateLabel(selectedDate), toDate: date };
+  }
+
+  if (viewMode === "year") {
+    return {
+      fromDate: toDateDigits(selectedYear, 1, 1),
+      label: `${selectedYear}년`,
+      toDate: toDateDigits(selectedYear, 12, 31),
+    };
+  }
+
+  const lastDay = new Date(selectedYear, selectedMonth, 0).getDate();
+
+  if (viewMode === "month") {
+    return {
+      fromDate: toDateDigits(selectedYear, selectedMonth, 1),
+      label: `${selectedYear}년 ${selectedMonth}월`,
+      toDate: toDateDigits(selectedYear, selectedMonth, lastDay),
+    };
+  }
+
+  return {
+    fromDate: toDateDigits(selectedYear, selectedMonth, selectedWeek.startDay),
+    label: `${selectedYear}년 ${selectedMonth}월 ${selectedWeek.label}`,
+    toDate: toDateDigits(selectedYear, selectedMonth, selectedWeek.endDay),
+  };
 }
 
 function isRoundKey(value: RecallRecordKey): value is RecallRoundKey {
@@ -548,8 +596,15 @@ function formatDentwebCandidateDate(candidate: DentwebRecallCandidate) {
   return time.length >= 4 ? `${dateText} ${time.slice(0, 2)}:${time.slice(2, 4)}` : dateText;
 }
 
-function DentwebRecallCandidatePanel({ clinicId }: { clinicId: string }) {
+function DentwebRecallCandidatePanel({
+  clinicId,
+  period,
+}: {
+  clinicId: string;
+  period: DentwebCandidatePeriod;
+}) {
   const [candidates, setCandidates] = useState<DentwebRecallCandidate[]>([]);
+  const [includeRescheduled, setIncludeRescheduled] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
@@ -560,7 +615,13 @@ function DentwebRecallCandidatePanel({ clinicId }: { clinicId: string }) {
     const loadCandidates = async () => {
       try {
         setIsLoading(true);
-        const payload = await loadDentwebRecallCandidates({ clinicId, limit: 40 });
+        const payload = await loadDentwebRecallCandidates({
+          clinicId,
+          fromDate: period.fromDate,
+          includeRescheduled,
+          limit: 40,
+          toDate: period.toDate,
+        });
 
         if (!isCurrent) {
           return;
@@ -587,7 +648,7 @@ function DentwebRecallCandidatePanel({ clinicId }: { clinicId: string }) {
       isCurrent = false;
       window.clearInterval(refreshTimer);
     };
-  }, [clinicId, reloadKey]);
+  }, [clinicId, includeRescheduled, period.fromDate, period.toDate, reloadKey]);
 
   return (
     <section className="crm-card overflow-hidden">
@@ -596,20 +657,35 @@ function DentwebRecallCandidatePanel({ clinicId }: { clinicId: string }) {
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-lg font-bold text-ink">덴트웹 예약 이슈 후보</h2>
             <span className="rounded-full bg-periwinkle px-2.5 py-1 text-xs font-bold text-monday-violet">
-              실시간 {formatNumber(candidates.length)}명
+              {period.label} {formatNumber(candidates.length)}명
             </span>
           </div>
-          <p className="mt-1 text-sm text-slate">취소·보류·예약 시간 경과 후 미이행 환자 중 재예약이 없는 환자만 표시합니다.</p>
+          <p className="mt-1 text-sm text-slate">
+            {includeRescheduled
+              ? "선택 기간의 취소·보류·미이행 이력과 이후 재예약된 환자를 함께 표시합니다."
+              : "선택 기간의 취소·보류·예약 시간 경과 후 미이행 환자 중 이후 예약이 없는 환자만 표시합니다."}
+          </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setReloadKey((current) => current + 1)}
-          disabled={isLoading}
-          className="inline-flex h-9 w-fit items-center gap-2 rounded-md border border-pebble bg-white px-3 text-xs font-bold text-slate transition hover:border-monday-violet hover:text-monday-violet disabled:cursor-wait disabled:opacity-60"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} aria-hidden />
-          새로고침
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-pebble bg-white px-3 text-xs font-bold text-slate transition hover:border-monday-violet hover:text-monday-violet">
+            <input
+              type="checkbox"
+              checked={includeRescheduled}
+              onChange={(event) => setIncludeRescheduled(event.target.checked)}
+              className="h-4 w-4 accent-monday-violet"
+            />
+            예약 이슈 이력 포함
+          </label>
+          <button
+            type="button"
+            onClick={() => setReloadKey((current) => current + 1)}
+            disabled={isLoading}
+            className="inline-flex h-9 w-fit items-center gap-2 rounded-md border border-pebble bg-white px-3 text-xs font-bold text-slate transition hover:border-monday-violet hover:text-monday-violet disabled:cursor-wait disabled:opacity-60"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} aria-hidden />
+            새로고침
+          </button>
+        </div>
       </div>
       {isLoading ? (
         <p className="px-4 py-8 text-center text-sm font-bold text-slate">덴트웹 예약 이슈를 확인하고 있습니다.</p>
@@ -632,9 +708,14 @@ function DentwebRecallCandidatePanel({ clinicId }: { clinicId: string }) {
               {candidates.map((candidate, index) => (
                 <tr key={`${candidate.patientId ?? candidate.chartNo ?? "patient"}-${candidate.appointmentDate}-${candidate.appointmentTime}-${index}`}>
                   <td>
-                    <span className="rounded-full bg-apricot/30 px-2.5 py-1 text-xs font-bold text-[#b94b10]">
-                      {candidate.status || "이슈"}
-                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="rounded-full bg-apricot/30 px-2.5 py-1 text-xs font-bold text-[#b94b10]">
+                        {candidate.status || "이슈"}
+                      </span>
+                      {candidate.hasFutureReservation ? (
+                        <span className="rounded-full bg-mint px-2.5 py-1 text-xs font-bold text-forest">재예약됨</span>
+                      ) : null}
+                    </div>
                   </td>
                   <td>
                     <p className="font-bold text-ink">{candidate.patientName || "이름 없음"}</p>
@@ -650,7 +731,7 @@ function DentwebRecallCandidatePanel({ clinicId }: { clinicId: string }) {
           </table>
         </div>
       ) : (
-        <p className="px-4 py-8 text-center text-sm font-bold text-slate">현재 조건에 맞는 덴트웹 예약 이슈 후보가 없습니다.</p>
+        <p className="px-4 py-8 text-center text-sm font-bold text-slate">선택 기간에 조건에 맞는 덴트웹 예약 이슈 후보가 없습니다.</p>
       )}
     </section>
   );
@@ -680,6 +761,10 @@ export function RecallsWorkspace({ initialTab = "declined" }: RecallsWorkspacePr
   );
   const activeWeekValue = Math.min(selectedWeek, weekOptions.length);
   const activeWeek = weekOptions.find((week) => week.value === activeWeekValue) ?? weekOptions[0];
+  const dentwebCandidatePeriod = useMemo(
+    () => getDentwebCandidatePeriod(viewMode, selectedYear, selectedMonth, activeWeek, selectedDate),
+    [activeWeek, selectedDate, selectedMonth, selectedYear, viewMode],
+  );
   const yearOptions = useMemo(() => {
     const years = consultations
       .map((consultation) => getDateParts(consultation.date).year)
@@ -876,7 +961,7 @@ export function RecallsWorkspace({ initialTab = "declined" }: RecallsWorkspacePr
         </div>
       </section>
 
-      <DentwebRecallCandidatePanel clinicId={activeClinic.id} />
+      <DentwebRecallCandidatePanel clinicId={activeClinic.id} period={dentwebCandidatePeriod} />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {[

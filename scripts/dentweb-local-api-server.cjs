@@ -849,12 +849,29 @@ async function queryDentwebPatientAppointmentsLive(config, input = {}) {
 async function queryDentwebRecallCandidatesLive(config, input = {}) {
   const limit = clampLimit(input.limit, 30, 80);
   const nowDateTime = getKoreanDateTimeDigits();
+  const fromDate = String(input.fromDate ?? input.from_date ?? "").replace(/\D/g, "").slice(0, 8);
+  const toDate = String(input.toDate ?? input.to_date ?? "").replace(/\D/g, "").slice(0, 8);
+  const includeRescheduled = ["1", "true", "yes", "on"].includes(String(input.includeRescheduled ?? input.include_rescheduled ?? "").toLowerCase());
+  const appointmentStatusColumn = "n\uC774\uD589\uD604\uD669";
+  const appointmentTimeColumn = "sz\uC608\uC57D\uC2DC\uAC01";
+  const patientIdColumn = "n\uD658\uC790ID";
+  const appointmentView = "PUB_V\uC608\uC57D\uC815\uBCF4";
+  const futureReservationCheck = `
+    SELECT 1
+    FROM [dbo].[${appointmentView}] AS future_appointment
+    WHERE future_appointment.[${patientIdColumn}] = appointment.[${patientIdColumn}]
+      AND future_appointment.[${appointmentStatusColumn}] = 0
+      AND future_appointment.[${appointmentTimeColumn}] > @nowDateTime
+  `;
+  const futureReservationClause = includeRescheduled ? "" : `AND NOT EXISTS (${futureReservationCheck})`;
 
   return withDentwebSqlServer(config, async ({ sql, pool }) => {
     const result = await pool
       .request()
       .input("limit", sql.Int, limit)
       .input("nowDateTime", sql.VarChar(12), nowDateTime)
+      .input("fromDateTime", sql.VarChar(12), `${fromDate || "00000000"}0000`)
+      .input("toDateTime", sql.VarChar(12), `${toDate || "99991231"}2359`)
       .query(`
         SELECT TOP (@limit)
           appointment.[n환자ID] AS [patientId],
@@ -864,7 +881,8 @@ async function queryDentwebRecallCandidatesLive(config, input = {}) {
           appointment.[n이행현황] AS [statusCode],
           appointment.[sz예약내용] AS [appointmentNote],
           appointment.[sz메모] AS [memo],
-          doctor.[sz이름] AS [doctor]
+          doctor.[sz이름] AS [doctor],
+          CASE WHEN EXISTS (${futureReservationCheck}) THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END AS [hasFutureReservation]
         FROM [dbo].[PUB_V예약정보] AS appointment
         LEFT JOIN [dbo].[PUB_V환자정보] AS patient
           ON patient.[n환자ID] = appointment.[n환자ID]
@@ -877,13 +895,15 @@ async function queryDentwebRecallCandidatesLive(config, input = {}) {
             AND appointment.[sz예약시각] <= @nowDateTime
           )
         )
-        AND NOT EXISTS (
-          SELECT 1
-          FROM [dbo].[PUB_V예약정보] AS future_appointment
-          WHERE future_appointment.[n환자ID] = appointment.[n환자ID]
-            AND future_appointment.[n이행현황] = 0
-            AND future_appointment.[sz예약시각] > @nowDateTime
-        )
+         SELECT 1
+         FROM [dbo].[PUB_V예약정보] AS future_appointment
+         WHERE future_appointment.[n환자ID] = appointment.[n환자ID]
+           AND future_appointment.[n이행현황] = 0
+           AND future_appointment.[sz예약시각] > @nowDateTime
+       )
+        AND appointment.[${appointmentTimeColumn}] >= @fromDateTime
+        AND appointment.[${appointmentTimeColumn}] <= @toDateTime
+        ${futureReservationClause}
         ORDER BY appointment.[sz예약시각] DESC;
       `);
 
@@ -895,6 +915,7 @@ async function queryDentwebRecallCandidatesLive(config, input = {}) {
       memo: normalizeMappedValue(row.memo),
       patientId: normalizeMappedValue(row.patientId),
       patientName: normalizeMappedValue(row.patientName),
+      hasFutureReservation: Boolean(row.hasFutureReservation),
       statusCode: Number(row.statusCode),
     }));
     const futureScheduledPatientIds = new Set(
@@ -5362,7 +5383,14 @@ async function handleDentwebRecallCandidates(request, response, requestUrl, conf
   const payload = await buildDentwebRecallCandidatesPayload(config, {
     ...body,
     clinicId: body.clinicId ?? requestUrl.searchParams.get("clinicId"),
+    fromDate: body.fromDate ?? body.from_date ?? requestUrl.searchParams.get("fromDate") ?? requestUrl.searchParams.get("from_date"),
+    includeRescheduled:
+      body.includeRescheduled ??
+      body.include_rescheduled ??
+      requestUrl.searchParams.get("includeRescheduled") ??
+      requestUrl.searchParams.get("include_rescheduled"),
     limit: body.limit ?? requestUrl.searchParams.get("limit"),
+    toDate: body.toDate ?? body.to_date ?? requestUrl.searchParams.get("toDate") ?? requestUrl.searchParams.get("to_date"),
   });
 
   sendJson(response, payload.ok ? 200 : 500, payload);

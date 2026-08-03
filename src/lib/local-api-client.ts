@@ -107,6 +107,7 @@ export type DentwebRecallCandidate = {
   appointmentNote?: string;
   chartNo?: string;
   doctor?: string;
+  hasFutureReservation?: boolean;
   memo?: string;
   patientId?: number | string;
   patientName?: string;
@@ -650,15 +651,30 @@ export async function loadDentwebPatientAppointments({
 
 export async function loadDentwebRecallCandidates({
   clinicId,
+  fromDate,
+  includeRescheduled = false,
   limit = 40,
+  toDate,
 }: {
   clinicId: string;
+  fromDate?: string;
+  includeRescheduled?: boolean;
   limit?: number;
+  toDate?: string;
 }) {
   const params = new URLSearchParams({
     clinicId,
+    includeRescheduled: String(includeRescheduled),
     limit: String(limit),
   });
+
+  if (fromDate) {
+    params.set("fromDate", fromDate);
+  }
+
+  if (toDate) {
+    params.set("toDate", toDate);
+  }
 
   return fetchLocalApiJson<DentwebRecallCandidatesResponse>(
     `/dentweb/recall-candidates?${params.toString()}`,
