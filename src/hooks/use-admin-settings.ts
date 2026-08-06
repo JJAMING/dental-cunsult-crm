@@ -67,6 +67,33 @@ function getStoredSettingsSnapshot() {
   return window.localStorage.getItem(adminSettingsStorageKey) ?? "";
 }
 
+type ServerSettingsResponse = {
+  userId: string;
+  settings: AdminSettings;
+};
+
+async function readSettingsFromServer() {
+  const response = await fetch("/api/admin-settings", {
+    cache: "no-store",
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const payload = (await response.json()) as Partial<ServerSettingsResponse>;
+
+  if (!payload.userId || !payload.settings) {
+    return null;
+  }
+
+  return {
+    userId: payload.userId,
+    settings: normalizeAdminSettings(payload.settings),
+  } satisfies ServerSettingsResponse;
+}
+
 const hydratedSupabaseSettingsUserIds = new Set<string>();
 const hydratingSupabaseSettingsUserIds = new Set<string>();
 
@@ -102,7 +129,8 @@ export function useAdminSettings() {
     let isMounted = true;
 
     async function hydrateSettingsForSignedInUser() {
-      const userId = await getSupabaseAuthenticatedUserId();
+      const serverSettings = await readSettingsFromServer();
+      const userId = serverSettings?.userId ?? (await getSupabaseAuthenticatedUserId());
 
       if (
         !userId ||
@@ -115,8 +143,8 @@ export function useAdminSettings() {
       hydratingSupabaseSettingsUserIds.add(userId);
 
       try {
-        const remoteSettings = await readSupabaseAdminSettings(readStoredSettings());
-        const currentUserId = await getSupabaseAuthenticatedUserId();
+        const remoteSettings = serverSettings?.settings ?? (await readSupabaseAdminSettings(readStoredSettings()));
+        const currentUserId = serverSettings?.userId ?? (await getSupabaseAuthenticatedUserId());
 
         if (isMounted && currentUserId === userId && remoteSettings) {
           writeStoredSettings(remoteSettings, { syncSupabase: false });

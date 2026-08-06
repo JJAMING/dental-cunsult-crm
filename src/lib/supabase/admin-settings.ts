@@ -1,5 +1,3 @@
-"use client";
-
 import {
   cloneAdminSettings,
   defaultAdminSettings,
@@ -19,7 +17,7 @@ type QueryBuilder = PromiseLike<SupabaseResult<UnknownRecord[]>> & {
   single<T = UnknownRecord>(): Promise<SupabaseResult<T>>;
   upsert(value: UnknownRecord | UnknownRecord[], options?: UnknownRecord): QueryBuilder;
 };
-type DynamicSupabaseClient = {
+export type DynamicSupabaseClient = {
   auth: {
     getUser(): Promise<{ data: { user: { id: string } | null }; error: SupabaseErrorLike }>;
   };
@@ -277,13 +275,10 @@ function findLinkedClinicForSettings(settings: AdminSettings, linkedClinics: Lin
   );
 }
 
-export async function readSupabaseAdminSettings(baseSettings: AdminSettings) {
-  const client = getDynamicSupabaseClient();
-
-  if (!client) {
-    return null;
-  }
-
+export async function readAdminSettingsForSupabaseClient(
+  client: DynamicSupabaseClient,
+  baseSettings: AdminSettings,
+) {
   const user = await ensureAuthenticatedUser(client);
 
   if (!user) {
@@ -308,6 +303,16 @@ export async function readSupabaseAdminSettings(baseSettings: AdminSettings) {
   );
 
   return buildSettingsForLinkedClinics(baseSettings, linkedClinics, snapshots);
+}
+
+export async function readSupabaseAdminSettings(baseSettings: AdminSettings) {
+  const client = getDynamicSupabaseClient();
+
+  if (!client) {
+    return null;
+  }
+
+  return readAdminSettingsForSupabaseClient(client, baseSettings);
 }
 
 export async function saveSupabaseAdminSettings(settings: AdminSettings) {
