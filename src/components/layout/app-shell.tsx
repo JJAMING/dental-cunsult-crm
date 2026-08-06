@@ -43,9 +43,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     : "덴트웹 연결 안 됨 · 관리자모드에서 서버 연결을 확인해주세요.";
   const dentwebConnectionDotClass = isDentwebConnected ? "bg-[#29a35a]" : "bg-[#e5484d]";
   const handleSignOut = () => {
-    setIsSigningOut(true);
     clearStoredAdminSettings();
     void createSupabaseBrowserClientOrNull()?.auth.signOut({ scope: "local" });
+    window.setTimeout(() => setIsSigningOut(true), 0);
   };
 
   return (
