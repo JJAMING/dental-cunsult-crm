@@ -12,7 +12,8 @@ import {
   Settings,
 } from "lucide-react";
 import { signOutAction } from "@/app/(auth)/login/actions";
-import { useAdminSettings } from "@/hooks/use-admin-settings";
+import { clearStoredAdminSettings, useAdminSettings } from "@/hooks/use-admin-settings";
+import { createSupabaseBrowserClientOrNull } from "@/lib/supabase/browser";
 import { useLocalApiStatus } from "@/hooks/use-local-api-status";
 
 const navItems = [
@@ -38,6 +39,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     ? `덴트웹 연결됨${localApiStatus.checkedAt ? ` · 마지막 확인 ${new Date(localApiStatus.checkedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}` : ""}`
     : "덴트웹 연결 안 됨 · 관리자모드에서 서버 연결을 확인해주세요.";
   const dentwebConnectionDotClass = isDentwebConnected ? "bg-[#29a35a]" : "bg-[#e5484d]";
+  const handleSignOut = () => {
+    clearStoredAdminSettings();
+    void createSupabaseBrowserClientOrNull()?.auth.signOut({ scope: "local" });
+  };
 
   return (
     <div className="min-h-screen bg-cloud text-ink">
@@ -84,6 +89,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <form action={signOutAction} className="absolute bottom-20 left-5 right-5">
           <button
             type="submit"
+            onClick={handleSignOut}
             className="flex w-full cursor-pointer items-center gap-3 rounded-full border border-pebble px-4 py-3 text-sm font-bold text-slate transition hover:border-monday-violet hover:bg-periwinkle hover:text-ink"
           >
             <LogOut className="h-4 w-4" aria-hidden />
@@ -166,6 +172,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <form action={signOutAction} className="mt-2 lg:hidden">
             <button
               type="submit"
+              onClick={handleSignOut}
               className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-full border border-pebble bg-white px-3 text-xs font-bold text-slate"
             >
               <LogOut className="h-3.5 w-3.5" aria-hidden />

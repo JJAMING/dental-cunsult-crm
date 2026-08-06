@@ -17,7 +17,11 @@ import {
   type RecommendationPhrases,
 } from "@/lib/admin-settings";
 import { syncAdminSettingsToLocalApi } from "@/lib/local-api-client";
-import { readSupabaseAdminSettings, saveSupabaseAdminSettings } from "@/lib/supabase/admin-settings";
+import {
+  getSupabaseAuthenticatedUserId,
+  readSupabaseAdminSettings,
+  saveSupabaseAdminSettings,
+} from "@/lib/supabase/admin-settings";
 
 function readStoredSettings() {
   try {
@@ -63,7 +67,13 @@ function getStoredSettingsSnapshot() {
   return window.localStorage.getItem(adminSettingsStorageKey) ?? "";
 }
 
-let hasStartedSupabaseSettingsHydration = false;
+const hydratedSupabaseSettingsUserIds = new Set<string>();
+const hydratingSupabaseSettingsUserIds = new Set<string>();
+
+export function clearStoredAdminSettings() {
+  window.localStorage.removeItem(adminSettingsStorageKey);
+  window.dispatchEvent(new Event(adminSettingsChangedEvent));
+}
 
 export function useAdminSettings() {
   const storedSettingsSnapshot = useSyncExternalStore(
@@ -89,22 +99,37 @@ export function useAdminSettings() {
   }, []);
 
   useEffect(() => {
-    if (hasStartedSupabaseSettingsHydration) {
-      return;
-    }
-
-    hasStartedSupabaseSettingsHydration = true;
     let isMounted = true;
 
-    readSupabaseAdminSettings(readStoredSettings())
-      .then((remoteSettings) => {
-        if (isMounted && remoteSettings) {
+    async function hydrateSettingsForSignedInUser() {
+      const userId = await getSupabaseAuthenticatedUserId();
+
+      if (
+        !userId ||
+        hydratedSupabaseSettingsUserIds.has(userId) ||
+        hydratingSupabaseSettingsUserIds.has(userId)
+      ) {
+        return;
+      }
+
+      hydratingSupabaseSettingsUserIds.add(userId);
+
+      try {
+        const remoteSettings = await readSupabaseAdminSettings(readStoredSettings());
+        const currentUserId = await getSupabaseAuthenticatedUserId();
+
+        if (isMounted && currentUserId === userId && remoteSettings) {
           writeStoredSettings(remoteSettings, { syncSupabase: false });
+          hydratedSupabaseSettingsUserIds.add(userId);
         }
-      })
-      .catch(() => {
+      } catch {
         // Browser/local API settings remain the fallback while Supabase is unavailable.
-      });
+      } finally {
+        hydratingSupabaseSettingsUserIds.delete(userId);
+      }
+    }
+
+    hydrateSettingsForSignedInUser();
 
     return () => {
       isMounted = false;

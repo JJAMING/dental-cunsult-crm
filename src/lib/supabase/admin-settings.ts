@@ -77,6 +77,18 @@ async function ensureAuthenticatedUser(client: DynamicSupabaseClient) {
   return data.user;
 }
 
+export async function getSupabaseAuthenticatedUserId() {
+  const client = getDynamicSupabaseClient();
+
+  if (!client) {
+    return null;
+  }
+
+  const user = await ensureAuthenticatedUser(client);
+
+  return user?.id ?? null;
+}
+
 function getJoinedClinic(clinic: SupabaseProfileClinicRow["clinic"]) {
   if (Array.isArray(clinic)) {
     return clinic[0] ?? null;
