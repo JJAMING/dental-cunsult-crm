@@ -2,12 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
 import {
   Activity,
   BarChart3,
   CalendarClock,
   ClipboardList,
   LayoutDashboard,
+  LoaderCircle,
   LogOut,
   Settings,
 } from "lucide-react";
@@ -28,6 +30,7 @@ const adminNavItem = { href: "/settings", label: "관리자모드", icon: Settin
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const [isSigningOut, setIsSigningOut] = useState(false);
   const { activeClinic } = useAdminSettings();
   const localApiStatus = useLocalApiStatus();
   const isDenseWorkspace = ["/consultations", "/recalls", "/reports", "/kpi-results", "/settings"].some(
@@ -40,6 +43,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     : "덴트웹 연결 안 됨 · 관리자모드에서 서버 연결을 확인해주세요.";
   const dentwebConnectionDotClass = isDentwebConnected ? "bg-[#29a35a]" : "bg-[#e5484d]";
   const handleSignOut = () => {
+    setIsSigningOut(true);
     clearStoredAdminSettings();
     void createSupabaseBrowserClientOrNull()?.auth.signOut({ scope: "local" });
   };
@@ -90,8 +94,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <button
             type="submit"
             onClick={handleSignOut}
-            className="flex w-full cursor-pointer items-center gap-3 rounded-full border border-pebble px-4 py-3 text-sm font-bold text-slate transition hover:border-monday-violet hover:bg-periwinkle hover:text-ink"
+            disabled={isSigningOut}
+            aria-busy={isSigningOut}
+            className="relative flex w-full cursor-pointer items-center gap-3 rounded-full border border-pebble px-4 py-3 text-sm font-bold text-slate transition hover:border-monday-violet hover:bg-periwinkle hover:text-ink disabled:cursor-wait disabled:opacity-70"
           >
+            {isSigningOut ? (
+              <span className="absolute inset-0 flex items-center justify-center gap-2 rounded-full bg-snow text-slate">
+                <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
+                로그아웃 중...
+              </span>
+            ) : null}
             <LogOut className="h-4 w-4" aria-hidden />
             로그아웃
           </button>
@@ -173,8 +185,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <button
               type="submit"
               onClick={handleSignOut}
-              className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-full border border-pebble bg-white px-3 text-xs font-bold text-slate"
+              disabled={isSigningOut}
+              aria-busy={isSigningOut}
+              className="relative inline-flex h-9 cursor-pointer items-center gap-2 rounded-full border border-pebble bg-white px-3 text-xs font-bold text-slate disabled:cursor-wait disabled:opacity-70"
             >
+              {isSigningOut ? (
+                <span className="absolute inset-0 flex items-center justify-center gap-2 rounded-full bg-white text-slate">
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                  로그아웃 중...
+                </span>
+              ) : null}
               <LogOut className="h-3.5 w-3.5" aria-hidden />
               로그아웃
             </button>
