@@ -3990,6 +3990,7 @@ export function AdminSettingsPanel() {
               onChange={(event) => setActiveClinicId(event.target.value)}
               className={inputClass}
             >
+              <option value={defaultAdminSettings.activeClinicId}>치과를 선택하세요</option>
               {settings.clinics.map((clinic) => (
                 <option key={clinic.id} value={clinic.id}>
                   {clinic.name}
@@ -4003,6 +4004,7 @@ export function AdminSettingsPanel() {
             <input
               value={activeClinic.name}
               onChange={(event) => renameClinic(activeClinic.id, event.target.value)}
+              disabled={settings.activeClinicId === defaultAdminSettings.activeClinicId}
               className={inputClass}
             />
           </label>

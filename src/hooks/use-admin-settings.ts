@@ -68,6 +68,7 @@ function getStoredSettingsSnapshot() {
 }
 
 type ServerSettingsResponse = {
+  isSuperAdmin?: boolean;
   userId: string;
   settings: AdminSettings;
 };
@@ -165,12 +166,26 @@ export function useAdminSettings() {
   }, []);
 
   const activeClinic = useMemo(
-    () => settings.clinics.find((clinic) => clinic.id === settings.activeClinicId) ?? settings.clinics[0],
+    () =>
+      settings.activeClinicId === defaultAdminSettings.activeClinicId
+        ? defaultAdminSettings.clinics[0]
+        : settings.clinics.find((clinic) => clinic.id === settings.activeClinicId) ?? settings.clinics[0],
     [settings.activeClinicId, settings.clinics],
   );
 
   const setActiveClinicId = useCallback(
     (clinicId: string) => {
+      if (clinicId === defaultAdminSettings.activeClinicId) {
+        writeStoredSettings(
+          {
+            ...readStoredSettings(),
+            activeClinicId: clinicId,
+          },
+          { syncSupabase: false },
+        );
+        return;
+      }
+
       updateSettings((current) => ({
         ...current,
         activeClinicId: clinicId,

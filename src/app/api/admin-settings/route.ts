@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { cloneAdminSettings } from "@/lib/admin-settings";
+import { cloneAdminSettings, defaultAdminSettings } from "@/lib/admin-settings";
 import {
   readAdminSettingsForSupabaseClient,
+  readIsSuperAdmin,
   type DynamicSupabaseClient,
 } from "@/lib/supabase/admin-settings";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -18,14 +19,19 @@ export async function GET() {
       return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
     }
 
-    const settings = await readAdminSettingsForSupabaseClient(client, cloneAdminSettings());
+    const isSuperAdmin = await readIsSuperAdmin(client);
+    const remoteSettings = await readAdminSettingsForSupabaseClient(client, cloneAdminSettings());
 
-    if (!settings) {
+    if (!remoteSettings) {
       return NextResponse.json({ error: "clinic_not_linked" }, { status: 404 });
     }
 
+    const settings = isSuperAdmin
+      ? { ...remoteSettings, activeClinicId: defaultAdminSettings.activeClinicId }
+      : remoteSettings;
+
     return NextResponse.json(
-      { userId: data.user.id, settings },
+      { isSuperAdmin, userId: data.user.id, settings },
       { headers: { "Cache-Control": "no-store, max-age=0" } },
     );
   } catch {

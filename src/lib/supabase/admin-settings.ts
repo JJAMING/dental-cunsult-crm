@@ -119,7 +119,7 @@ async function readLinkedSupabaseClinic(client: DynamicSupabaseClient, userId: s
   } satisfies LinkedSupabaseClinic;
 }
 
-async function readIsSuperAdmin(client: DynamicSupabaseClient) {
+export async function readIsSuperAdmin(client: DynamicSupabaseClient) {
   const { data, error } = await client.rpc("is_super_admin").single<boolean>();
 
   assertNoSupabaseError(error);
