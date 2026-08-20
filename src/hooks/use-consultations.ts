@@ -16,7 +16,7 @@ import {
   readSupabaseConsultations,
   updateSupabaseConsultation,
 } from "@/lib/supabase/consultations";
-import { isSupabaseConfigured } from "@/lib/supabase/browser";
+import { createSupabaseBrowserClientOrNull, isSupabaseConfigured } from "@/lib/supabase/browser";
 import type { Consultation, ConsultationResult, PatientType } from "@/types/domain";
 
 const consultationStorageKey = "dental-consult-consultations-v1";
@@ -290,6 +290,35 @@ export function useConsultations(options: UseConsultationsOptions = {}) {
       window.clearTimeout(refreshTimerId);
       window.removeEventListener(adminSettingsChangedEvent, refreshServerConsultations);
       window.removeEventListener(consultationStorageChangedEvent, refreshServerConsultations);
+    };
+  }, [refreshServerConsultations]);
+
+  useEffect(() => {
+    const supabase = createSupabaseBrowserClientOrNull();
+
+    if (!supabase) {
+      return;
+    }
+
+    const channel = supabase
+      .channel("consultations-realtime")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "consultations",
+        },
+        () => {
+          // Reload through the normal path so server-PC clients keep the central
+          // database as their source of truth while Vercel-only clients use Supabase.
+          void refreshServerConsultations();
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
     };
   }, [refreshServerConsultations]);
 
